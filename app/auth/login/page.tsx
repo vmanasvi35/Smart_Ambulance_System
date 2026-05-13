@@ -9,6 +9,7 @@ import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card'
 import { Ambulance, Loader2 } from 'lucide-react'
+import { ensureUserProfile, getDashboardPath } from '@/lib/profiles'
 
 export default function LoginPage() {
   const [email, setEmail] = useState('')
@@ -35,17 +36,15 @@ export default function LoginPage() {
     }
 
     if (data.user) {
-      const { data: profile } = await supabase
-        .from('profiles')
-        .select('role')
-        .eq('id', data.user.id)
-        .single()
+      const { profile, error: profileError } = await ensureUserProfile(supabase, data.user)
 
-      if (profile) {
-        router.push(profile.role === 'police' ? '/police/dashboard' : '/driver/dashboard')
-      } else {
-        router.push('/driver/dashboard')
+      if (profileError || !profile) {
+        setError(profileError?.message ?? 'Could not set up your profile. Please try again.')
+        setLoading(false)
+        return
       }
+
+      router.push(getDashboardPath(profile.role))
     }
   }
 
