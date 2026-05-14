@@ -15,7 +15,7 @@ import {
   RefreshCw,
   Clock,
 } from 'lucide-react'
-import type { PoliceAlert, AlertStatus, AlertType, RouteCondition } from '@/lib/types'
+import type { PoliceAlert, AlertStatus, AlertType, RouteCondition, PoliceDecision, RouteState } from '@/lib/types'
 
 const alertTypeConfig: Record<AlertType, { icon: React.ElementType; color: string }> = {
   traffic: { icon: AlertTriangle, color: 'text-yellow-500' },
@@ -56,7 +56,7 @@ export default function AlertsPage() {
   const loadAlerts = async () => {
     const { data } = await supabase
       .from('police_alerts')
-      .select('*, trip:ambulance_trips(ambulance_id, source, destination)')
+      .select('*, trip:ambulance_trips(ambulance_id, source, destination, route_data)')
       .order('created_at', { ascending: false })
 
     if (data) setAlerts(data)
@@ -72,11 +72,32 @@ export default function AlertsPage() {
     loadAlerts()
   }
 
-  const respondToAlert = async (alert: PoliceAlert, condition: RouteCondition, response: string) => {
+  const respondToAlert = async (
+    alert: PoliceAlert,
+    decision: PoliceDecision,
+    condition: RouteCondition,
+    routeState: RouteState,
+    response: string,
+  ) => {
+    const { data: routeData } = await supabase
+      .from('ambulance_trips')
+      .select('route_data')
+      .eq('id', alert.trip_id)
+      .single()
+
+    const nextRouteData = {
+      ...(routeData?.route_data ?? {}),
+      policeDecision: decision,
+      policeDecisionAt: new Date().toISOString(),
+      policeMessage: response,
+      routeState,
+    }
+
     await supabase
       .from('ambulance_trips')
       .update({
         route_condition: condition,
+        route_data: nextRouteData,
         updated_at: new Date().toISOString(),
       })
       .eq('id', alert.trip_id)
@@ -85,7 +106,7 @@ export default function AlertsPage() {
       .from('police_alerts')
       .update({
         alert_status: 'resolved',
-        message: `${alert.message ?? ''} Police response: ${response}.`,
+        message: `${alert.message ?? ''} Police decision: ${response}.`,
         updated_at: new Date().toISOString(),
       })
       .eq('id', alert.id)
@@ -218,45 +239,61 @@ export default function AlertsPage() {
                         </div>
                         <div className="flex flex-wrap gap-2">
                           {alert.alert_status === 'pending' && (
-                            <Button
-                              size="sm"
-                              variant="secondary"
-                              onClick={() => updateAlertStatus(alert.id, 'acknowledged')}
-                            >
-                              Acknowledge
-                            </Button>
-                          )}
-                          {alert.alert_status === 'acknowledged' && (
                             <>
                               <Button
                                 size="sm"
                                 variant="secondary"
-                                onClick={() => respondToAlert(alert, 'clear', 'Route Cleared')}
+                                onClick={() => updateAlertStatus(alert.id, 'acknowledged')}
                               >
-                                Route Cleared
+                                Acknowledge
+                              </Button>
+                              <Button
+                                size="sm"
+                                variant="default"
+                                onClick={() => respondToAlert(alert, 'CLEAR_ROUTE', 'clear', 'CLEARED', 'Clear Route')}
+                              >
+                                Clear Route
                               </Button>
                               <Button
                                 size="sm"
                                 variant="secondary"
-                                onClick={() => respondToAlert(alert, 'heavy_congestion', 'Heavy Congestion')}
+                                onClick={() => respondToAlert(alert, 'REROUTE_REQUIRED', 'heavy_congestion', 'REROUTING', 'Reroute Required')}
                               >
-                                Heavy Congestion
+                                Reroute Required
                               </Button>
                               <Button
                                 size="sm"
-                                variant="secondary"
-                                onClick={() => respondToAlert(alert, 'heavy_congestion', 'Cannot Clear')}
+                                variant="destructive"
+                                onClick={() => respondToAlert(alert, 'ROAD_BLOCK_CONFIRMED', 'road_blocked', 'REROUTING', 'Road Block Confirmed')}
                               >
-                                Cannot Clear
-                              </Button>
-                              <Button
-                                size="sm"
-                                onClick={() => respondToAlert(alert, 'road_blocked', 'Road Blocked')}
-                              >
-                                <CheckCircle className="mr-1 h-3 w-3" />
-                                Road Blocked
+                                Road Block Confirmed
                               </Button>
                             </>
+                          )}
+                          {alert.alert_status === 'acknowledged' && (
+                            <div className="flex flex-wrap gap-2">
+                              <Button
+                                size="sm"
+                                variant="default"
+                                onClick={() => respondToAlert(alert, 'CLEAR_ROUTE', 'clear', 'CLEARED', 'Clear Route')}
+                              >
+                                Clear Route
+                              </Button>
+                              <Button
+                                size="sm"
+                                variant="secondary"
+                                onClick={() => respondToAlert(alert, 'REROUTE_REQUIRED', 'heavy_congestion', 'REROUTING', 'Reroute Required')}
+                              >
+                                Reroute Required
+                              </Button>
+                              <Button
+                                size="sm"
+                                variant="destructive"
+                                onClick={() => respondToAlert(alert, 'ROAD_BLOCK_CONFIRMED', 'road_blocked', 'REROUTING', 'Road Block Confirmed')}
+                              >
+                                Road Block Confirmed
+                              </Button>
+                            </div>
                           )}
                         </div>
                       </div>

@@ -16,7 +16,7 @@ import {
   CheckCircle,
   XCircle,
 } from 'lucide-react'
-import type { AmbulanceTrip, RouteCondition } from '@/lib/types'
+import type { AmbulanceTrip, RouteCondition, PoliceDecision, RouteState } from '@/lib/types'
 
 export default function PoliceControlRoom() {
   const [trips, setTrips] = useState<AmbulanceTrip[]>([])
@@ -66,20 +66,40 @@ export default function PoliceControlRoom() {
     setLoading(false)
   }
 
-  const respondToRouteAlert = async (trip: AmbulanceTrip, condition: RouteCondition, response: string) => {
+  const respondToRouteAlert = async (
+    trip: AmbulanceTrip,
+    decision: PoliceDecision,
+    condition: RouteCondition,
+    routeState: RouteState,
+    response: string,
+  ) => {
     const { data: { user } } = await supabase.auth.getUser()
+    const { data: currentTrip } = await supabase
+      .from('ambulance_trips')
+      .select('route_data')
+      .eq('id', trip.id)
+      .single()
+
+    const nextRouteData = {
+      ...(currentTrip?.route_data ?? {}),
+      policeDecision: decision,
+      policeDecisionAt: new Date().toISOString(),
+      policeMessage: response,
+      routeState,
+    }
 
     await supabase
       .from('ambulance_trips')
       .update({
         route_condition: condition,
+        route_data: nextRouteData,
         updated_at: new Date().toISOString(),
       })
       .eq('id', trip.id)
     
     await supabase.from('police_alerts').insert({
       trip_id: trip.id,
-      alert_type: condition === 'clear' ? 'route_assessment' : 'traffic',
+      alert_type: condition === 'clear' ? 'route_assessment' : 'route_assessment',
       message: `${response} response issued for ${trip.ambulance_id}. Driver dashboard will handle navigation updates.`,
       assigned_police: user?.id,
       alert_status: 'resolved',
@@ -235,41 +255,43 @@ export default function PoliceControlRoom() {
                       <Button
                         size="sm"
                         variant="secondary"
-                        onClick={() => respondToRouteAlert(selectedTrip, 'clear', 'Route Cleared')}
+                        onClick={() => respondToRouteAlert(selectedTrip, 'CLEAR_ROUTE', 'clear', 'CLEARED', 'Clear Route')}
                       >
                         <CheckCircle className="mr-1 h-3 w-3 text-green-500" />
-                        Route Cleared
+                        Clear Route
                       </Button>
                       <Button
                         size="sm"
                         variant="secondary"
-                        onClick={() => respondToRouteAlert(selectedTrip, 'heavy_congestion', 'Heavy Congestion')}
+                        onClick={() => respondToRouteAlert(selectedTrip, 'REROUTE_REQUIRED', 'heavy_congestion', 'REROUTING', 'Reroute Required')}
                       >
                         <AlertTriangle className="mr-1 h-3 w-3 text-orange-500" />
-                        Heavy Congestion
+                        Reroute Required
                       </Button>
                       <Button
                         size="sm"
-                        variant="secondary"
-                        onClick={() => respondToRouteAlert(selectedTrip, 'heavy_congestion', 'Cannot Clear')}
-                      >
-                        <XCircle className="mr-1 h-3 w-3 text-yellow-500" />
-                        Cannot Clear
-                      </Button>
-                      <Button
-                        size="sm"
-                        variant="secondary"
-                        onClick={() => respondToRouteAlert(selectedTrip, 'road_blocked', 'Road Blocked')}
+                        variant="destructive"
+                        onClick={() => respondToRouteAlert(selectedTrip, 'ROAD_BLOCK_CONFIRMED', 'road_blocked', 'REROUTING', 'Road Block Confirmed')}
                       >
                         <XCircle className="mr-1 h-3 w-3 text-red-500" />
-                        Road Blocked
+                        Road Block Confirmed
                       </Button>
                     </div>
                   </div>
-
-                  <div className="rounded-lg border border-border/50 bg-secondary/30 p-3 text-xs text-muted-foreground">
-                    Traffic is detected automatically from ambulance telemetry and simulations. Police responses only confirm the condition; rerouting is handled by the driver dashboard.
-                  </div>
+                  {selectedTrip.route_data?.routeState && (
+                    <div className="rounded-lg border border-border/50 bg-secondary/30 p-3 text-xs text-muted-foreground">
+                      <p>
+                        <span className="font-medium text-foreground">Route State:</span>{' '}
+                        {selectedTrip.route_data.routeState}
+                      </p>
+                      {selectedTrip.route_data.policeMessage && (
+                        <p className="mt-1">
+                          <span className="font-medium text-foreground">Last Decision:</span>{' '}
+                          {selectedTrip.route_data.policeMessage}
+                        </p>
+                      )}
+                    </div>
+                  )}
                   <div className="flex gap-2">
                     <Button
                       size="sm"

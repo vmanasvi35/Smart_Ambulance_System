@@ -1,4 +1,4 @@
-import type { RouteCondition, TrafficLevel } from '@/lib/types'
+import type { PoliceDecision, RouteCondition, RouteState, TrafficLevel } from '@/lib/types'
 
 export type LatLngTuple = [number, number]
 
@@ -25,6 +25,13 @@ export interface SmartRouteData {
   rerouteCount?: number
   lastReroutedAt?: string
   lastReroutedFor?: RouteCondition
+  routeState?: RouteState
+  policeDecision?: PoliceDecision
+  policeDecisionAt?: string
+  policeMessage?: string
+  lastAlertedFor?: RouteCondition
+  lastAlertedAt?: string
+  manualRerouteCount?: number
   roadblocks?: Roadblock[]
   spawnedVehicles?: SpawnedVehicle[]
 }
@@ -150,6 +157,7 @@ export async function calculateSmartRoute({
             waypoints,
             ...routeStats(waypoints, trafficLevel),
             trafficLevel,
+            routeState: 'NORMAL',
             roadblocks: avoidPoints,
           }
         }
@@ -165,6 +173,7 @@ export async function calculateSmartRoute({
     waypoints,
     ...routeStats(waypoints, trafficLevel),
     trafficLevel,
+    routeState: 'NORMAL',
     roadblocks: avoidPoints,
   }
 }

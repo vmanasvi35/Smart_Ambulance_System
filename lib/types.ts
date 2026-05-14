@@ -6,6 +6,16 @@ export type RouteCondition = 'unknown' | 'clear' | 'moderate_traffic' | 'heavy_c
 
 export type TrafficLevel = 'low' | 'medium' | 'high'
 
+export type RouteState =
+  | 'NORMAL'
+  | 'CONGESTION_DETECTED'
+  | 'ROADBLOCK_DETECTED'
+  | 'WAITING_FOR_POLICE_RESPONSE'
+  | 'REROUTING'
+  | 'CLEARED'
+
+export type PoliceDecision = 'CLEAR_ROUTE' | 'REROUTE_REQUIRED' | 'ROAD_BLOCK_CONFIRMED'
+
 export type AlertType = 'traffic' | 'network_failure' | 'route_assessment' | 'general'
 
 export type AlertStatus = 'pending' | 'acknowledged' | 'resolved'

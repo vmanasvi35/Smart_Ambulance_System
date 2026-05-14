@@ -1,8 +1,8 @@
 import { cn } from '@/lib/utils'
-import type { TripStatus, RouteCondition, AlertStatus } from '@/lib/types'
+import type { TripStatus, RouteCondition, AlertStatus, RouteState } from '@/lib/types'
 
 interface StatusBadgeProps {
-  status: TripStatus | RouteCondition | AlertStatus
+  status: TripStatus | RouteCondition | AlertStatus | RouteState
   className?: string
 }
 
@@ -23,6 +23,14 @@ const statusConfig: Record<string, { label: string; className: string }> = {
   // Alert statuses
   acknowledged: { label: 'Acknowledged', className: 'bg-blue-500/20 text-blue-400 border-blue-500/30' },
   resolved: { label: 'Resolved', className: 'bg-green-500/20 text-green-400 border-green-500/30' },
+
+  // Route decision states
+  NORMAL: { label: 'Normal', className: 'bg-green-500/20 text-green-400 border-green-500/30' },
+  CONGESTION_DETECTED: { label: 'Congestion Detected', className: 'bg-orange-500/20 text-orange-400 border-orange-500/30' },
+  ROADBLOCK_DETECTED: { label: 'Roadblock Detected', className: 'bg-red-500/20 text-red-400 border-red-500/30 status-emergency' },
+  WAITING_FOR_POLICE_RESPONSE: { label: 'Waiting for Police', className: 'bg-blue-500/20 text-blue-400 border-blue-500/30' },
+  REROUTING: { label: 'Rerouting', className: 'bg-yellow-500/20 text-yellow-400 border-yellow-500/30' },
+  CLEARED: { label: 'Cleared', className: 'bg-green-500/20 text-green-400 border-green-500/30 status-active' },
 }
 
 export function StatusBadge({ status, className }: StatusBadgeProps) {

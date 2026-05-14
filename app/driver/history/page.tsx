@@ -40,6 +40,17 @@ export default function TripHistoryPage() {
     })
   }
 
+  const minutesBetween = (start: string, end: string) => {
+    const diff = new Date(end).getTime() - new Date(start).getTime()
+    return Math.max(0, Math.round(diff / 60000))
+  }
+
+  const getDelayText = (trip: AmbulanceTrip) => {
+    const routeData = trip.route_data as { etaDelay?: number } | null
+    if (!routeData?.etaDelay) return null
+    return `+${routeData.etaDelay} min delay`
+  }
+
   if (loading) {
     return (
       <div className="flex h-full items-center justify-center">
@@ -111,6 +122,30 @@ export default function TripHistoryPage() {
                       <Clock className="h-4 w-4" />
                       <span className="text-sm">{formatDate(trip.created_at)}</span>
                     </div>
+                  </div>
+                  <div className="mt-4 grid gap-3 sm:grid-cols-2">
+                    <div className="rounded-lg border border-border/50 bg-secondary/30 p-3">
+                      <p className="text-xs text-muted-foreground">Expected Route Time</p>
+                      <p className="text-sm font-medium text-foreground">
+                        {(trip.route_data as { estimatedTime?: number } | null)?.estimatedTime
+                          ? `${(trip.route_data as { estimatedTime?: number }).estimatedTime} min`
+                          : '--'}
+                      </p>
+                    </div>
+                    <div className="rounded-lg border border-border/50 bg-secondary/30 p-3">
+                      <p className="text-xs text-muted-foreground">Delay Included</p>
+                      <p className="text-sm font-medium text-foreground">
+                        {getDelayText(trip) ?? 'No delay recorded'}
+                      </p>
+                    </div>
+                    {trip.status === 'completed' && (
+                      <div className="rounded-lg border border-border/50 bg-secondary/30 p-3 sm:col-span-2">
+                        <p className="text-xs text-muted-foreground">Trip Duration</p>
+                        <p className="text-sm font-medium text-foreground">
+                          {minutesBetween(trip.created_at, trip.updated_at)} min
+                        </p>
+                      </div>
+                    )}
                   </div>
                 </CardContent>
               </Card>

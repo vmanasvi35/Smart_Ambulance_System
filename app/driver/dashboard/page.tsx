@@ -27,9 +27,9 @@ import {
   Square,
   WifiOff,
 } from 'lucide-react'
-import type { AmbulanceTrip, Profile, RouteCondition, TrafficLevel } from '@/lib/types'
+import type { AmbulanceTrip, PoliceDecision, Profile, RouteCondition, RouteState, TrafficLevel } from '@/lib/types'
 
-const rerouteConditions: RouteCondition[] = ['heavy_congestion', 'road_blocked']
+const rerouteDecisions: PoliceDecision[] = ['REROUTE_REQUIRED', 'ROAD_BLOCK_CONFIRMED']
 
 function routeDataFor(trip: AmbulanceTrip | null): SmartRouteData | null {
   return (trip?.route_data as SmartRouteData | null) ?? null
@@ -37,6 +37,10 @@ function routeDataFor(trip: AmbulanceTrip | null): SmartRouteData | null {
 
 function affectedRoadFor(trip: AmbulanceTrip) {
   return `${trip.source} to ${trip.destination}`
+}
+
+function stateForIssue(condition: RouteCondition): RouteState {
+  return condition === 'road_blocked' ? 'ROADBLOCK_DETECTED' : 'CONGESTION_DETECTED'
 }
 
 export default function DriverDashboard() {
@@ -160,10 +164,41 @@ export default function DriverDashboard() {
     async (condition: RouteCondition, etaDelay: number, congestionLevel: string) => {
       const trip = activeTripRef.current
       if (!trip || simulationState.isOffline) return
+      if (condition !== 'heavy_congestion' && condition !== 'road_blocked') return
+
+      const routeData = routeDataFor(trip)
+      if (routeData?.routeState === 'WAITING_FOR_POLICE_RESPONSE') return
 
       const alertKey = `${trip.id}:${condition}:${Math.round(etaDelay)}`
       if (alertKeyRef.current === alertKey) return
       alertKeyRef.current = alertKey
+
+      const { data: existingAlert } = await supabase
+        .from('police_alerts')
+        .select('id')
+        .eq('trip_id', trip.id)
+        .in('alert_status', ['pending', 'acknowledged'])
+        .limit(1)
+        .maybeSingle()
+
+      if (existingAlert) return
+
+      await supabase
+        .from('ambulance_trips')
+        .update({
+          route_condition: condition,
+          route_data: {
+            ...(routeData ?? {}),
+            routeState: 'WAITING_FOR_POLICE_RESPONSE',
+            lastAlertedFor: condition,
+            lastAlertedAt: new Date().toISOString(),
+            policeDecision: undefined,
+            policeDecisionAt: undefined,
+            policeMessage: undefined,
+          },
+          updated_at: new Date().toISOString(),
+        })
+        .eq('id', trip.id)
 
       await supabase.from('police_alerts').insert({
         trip_id: trip.id,
@@ -180,15 +215,26 @@ export default function DriverDashboard() {
   )
 
   const rerouteTrip = useCallback(
-    async (reason: RouteCondition) => {
+    async (reason: RouteCondition, mode: 'police' | 'manual' = 'police') => {
       const trip = activeTripRef.current
       if (!trip || rerouting || simulationState.isOffline) return
 
       const routeData = routeDataFor(trip)
-      if (routeData?.lastReroutedFor === reason) return
+      if (mode === 'police' && routeData?.lastReroutedFor === reason) return
       if (!trip.current_lat || !trip.current_lng || !trip.dest_lat || !trip.dest_lng) return
 
       setRerouting(true)
+      await updateTripRouteState({
+        route_data: {
+          ...(routeData ?? {
+            waypoints: [],
+            totalDistance: trip.distance ?? 0,
+            estimatedTime: trip.eta ?? 0,
+          }),
+          routeState: 'REROUTING',
+        },
+      })
+
       const nextRoute = await calculateSmartRoute({
         source: [trip.current_lat, trip.current_lng],
         destination: [trip.dest_lat, trip.dest_lng],
@@ -204,6 +250,10 @@ export default function DriverDashboard() {
         rerouteCount: (routeData?.rerouteCount ?? 0) + 1,
         lastReroutedAt: new Date().toISOString(),
         lastReroutedFor: reason,
+        routeState: 'CLEARED',
+        policeDecision: undefined,
+        policeMessage: mode === 'manual' ? 'Driver used emergency manual reroute.' : routeData?.policeMessage,
+        manualRerouteCount: mode === 'manual' ? (routeData?.manualRerouteCount ?? 0) + 1 : routeData?.manualRerouteCount,
       }
 
       await updateTripRouteState({
@@ -220,10 +270,11 @@ export default function DriverDashboard() {
 
   useEffect(() => {
     if (!activeTrip || activeTrip.status !== 'in_progress') return
-    if (!rerouteConditions.includes(activeTrip.route_condition)) return
+    const routeData = routeDataFor(activeTrip)
+    if (!routeData?.policeDecision || !rerouteDecisions.includes(routeData.policeDecision)) return
 
-    rerouteTrip(activeTrip.route_condition)
-  }, [activeTrip?.route_condition, activeTrip?.status, rerouteTrip])
+    rerouteTrip(routeData.policeDecision === 'ROAD_BLOCK_CONFIRMED' ? 'road_blocked' : 'heavy_congestion')
+  }, [activeTrip, rerouteTrip])
 
   useEffect(() => {
     if (!activeTrip || activeTrip.status !== 'in_progress' || !tracking || simulationState.isOffline) return
@@ -281,6 +332,12 @@ export default function DriverDashboard() {
       .update({
         status: 'in_progress',
         route_condition: 'clear',
+        route_data: {
+          ...(routeDataFor(activeTrip) ?? {}),
+          routeState: 'NORMAL',
+          policeDecision: undefined,
+          policeMessage: undefined,
+        },
         updated_at: new Date().toISOString(),
       })
       .eq('id', activeTrip.id)
@@ -322,6 +379,7 @@ export default function DriverDashboard() {
         trafficLevel: level,
         etaDelay,
         estimatedTime: baseEta + etaDelay,
+        routeState: level === 'high' ? stateForIssue(condition) : 'NORMAL',
         roadblocks: simulationState.roadblocks,
         spawnedVehicles: simulationState.spawnedVehicles,
       },
@@ -365,6 +423,7 @@ export default function DriverDashboard() {
         }),
         roadblocks: nextRoadblocks,
         etaDelay,
+        routeState: 'ROADBLOCK_DETECTED',
       },
     })
     createAutomaticAlert('road_blocked', etaDelay, 'Road Blocked')
@@ -404,9 +463,10 @@ export default function DriverDashboard() {
     if (!activeTrip) return
 
     const routeData = routeDataFor(activeTrip)
+    alertKeyRef.current = null
     await updateTripRouteState({
       route_condition: 'clear',
-      route_data: routeData ? { ...routeData, roadblocks: [], etaDelay: 0 } : undefined,
+      route_data: routeData ? { ...routeData, roadblocks: [], etaDelay: 0, routeState: 'NORMAL' } : undefined,
     })
   }
 
@@ -418,8 +478,14 @@ export default function DriverDashboard() {
     }
   }
 
+  const handleManualReroute = async () => {
+    const reason = activeTrip?.route_condition === 'road_blocked' ? 'road_blocked' : 'heavy_congestion'
+    await rerouteTrip(reason, 'manual')
+  }
+
   const routeData = useMemo(() => routeDataFor(activeTrip), [activeTrip])
   const etaDelay = routeData?.etaDelay ?? 0
+  const routeState = routeData?.routeState ?? 'NORMAL'
 
   if (loading) {
     return (
@@ -484,7 +550,7 @@ export default function DriverDashboard() {
                     </div>
                   </div>
 
-                  <div className="grid grid-cols-2 gap-4 lg:grid-cols-4">
+                  <div className="grid grid-cols-2 gap-4 lg:grid-cols-5">
                     <div className="rounded-lg bg-secondary/50 p-3">
                       <div className="flex items-center gap-2 text-muted-foreground">
                         <Clock className="h-4 w-4" />
@@ -506,13 +572,20 @@ export default function DriverDashboard() {
                     <div className="rounded-lg bg-secondary/50 p-3">
                       <div className="flex items-center gap-2 text-muted-foreground">
                         <AlertTriangle className="h-4 w-4" />
-                        <span className="text-xs">Route</span>
+                        <span className="text-xs">Route Condition</span>
                       </div>
                       <StatusBadge status={activeTrip.route_condition} className="mt-1" />
                     </div>
                     <div className="rounded-lg bg-secondary/50 p-3">
                       <div className="flex items-center gap-2 text-muted-foreground">
-                        {simulationState.isOffline ? <WifiOff className="h-4 w-4" /> : <Route className="h-4 w-4" />}
+                        <Route className="h-4 w-4" />
+                        <span className="text-xs">Route State</span>
+                      </div>
+                      <StatusBadge status={routeState} className="mt-1" />
+                    </div>
+                    <div className="rounded-lg bg-secondary/50 p-3">
+                      <div className="flex items-center gap-2 text-muted-foreground">
+                        {simulationState.isOffline ? <WifiOff className="h-4 w-4" /> : <RefreshCw className="h-4 w-4" />}
                         <span className="text-xs">Delay</span>
                       </div>
                       <p className="mt-1 text-lg font-semibold text-foreground">
@@ -520,6 +593,15 @@ export default function DriverDashboard() {
                       </p>
                     </div>
                   </div>
+                  {routeData?.policeDecision && (
+                    <div className="rounded-lg border border-border/50 bg-secondary/30 p-4">
+                      <p className="text-sm font-semibold text-foreground">Police Decision</p>
+                      <p className="text-sm text-muted-foreground">{routeData.policeDecision.replaceAll('_', ' ')}</p>
+                      {routeData.policeMessage && (
+                        <p className="mt-2 text-xs text-muted-foreground">{routeData.policeMessage}</p>
+                      )}
+                    </div>
+                  )}
 
                   <div className="flex flex-wrap gap-2">
                     {activeTrip.status === 'pending' && (
@@ -538,6 +620,12 @@ export default function DriverDashboard() {
                           <Square className="mr-2 h-4 w-4" />
                           Complete Trip
                         </Button>
+                        {(routeState !== 'NORMAL' && routeState !== 'REROUTING') && (
+                          <Button onClick={handleManualReroute} variant="destructive" className="flex-1">
+                            <RefreshCw className="mr-2 h-4 w-4" />
+                            Manual Reroute
+                          </Button>
+                        )}
                       </>
                     )}
                     {rerouting && (
