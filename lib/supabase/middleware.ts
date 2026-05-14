@@ -1,5 +1,6 @@
 import { createServerClient } from '@supabase/ssr'
 import { NextResponse, type NextRequest } from 'next/server'
+import { ensureUserProfile, getDashboardPath } from '@/lib/profiles'
 
 export async function updateSession(request: NextRequest) {
   let supabaseResponse = NextResponse.next({
@@ -46,15 +47,11 @@ export async function updateSession(request: NextRequest) {
 
   // Redirect authenticated users from auth pages to their dashboard
   if (request.nextUrl.pathname.startsWith('/auth') && user) {
-    const { data: profile } = await supabase
-      .from('profiles')
-      .select('role')
-      .eq('id', user.id)
-      .single()
+    const { profile } = await ensureUserProfile(supabase, user)
     
     if (profile) {
       const url = request.nextUrl.clone()
-      url.pathname = profile.role === 'police' ? '/police/dashboard' : '/driver/dashboard'
+      url.pathname = getDashboardPath(profile.role)
       return NextResponse.redirect(url)
     }
   }

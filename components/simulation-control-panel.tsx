@@ -1,9 +1,7 @@
 'use client'
 
-import { useState } from 'react'
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
 import { Button } from '@/components/ui/button'
-import { Switch } from '@/components/ui/switch'
 import { Label } from '@/components/ui/label'
 import {
   TrafficCone,
@@ -16,8 +14,7 @@ import {
   SignalMedium,
   SignalHigh,
 } from 'lucide-react'
-
-export type TrafficLevel = 'low' | 'medium' | 'high'
+import type { TrafficLevel } from '@/lib/types'
 
 export interface SimulationState {
   trafficLevel: TrafficLevel
@@ -55,11 +52,11 @@ export function SimulationControlPanel({
         </CardTitle>
       </CardHeader>
       <CardContent className="space-y-5">
-        {/* Traffic Stimulator */}
+        {/* Traffic Simulator */}
         <div className="space-y-3">
           <Label className="flex items-center gap-2 text-sm font-medium text-foreground">
             <TrafficCone className="h-4 w-4 text-yellow-500" />
-            Traffic Stimulator
+            Traffic Simulator
           </Label>
           <div className="flex gap-1">
             <Button
@@ -97,7 +94,7 @@ export function SimulationControlPanel({
           </p>
         </div>
 
-        {/* Network Stimulator */}
+        {/* Offline Simulator */}
         <div className="space-y-3">
           <Label className="flex items-center gap-2 text-sm font-medium text-foreground">
             {simulationState.isOffline ? (
@@ -105,19 +102,21 @@ export function SimulationControlPanel({
             ) : (
               <Wifi className="h-4 w-4 text-green-500" />
             )}
-            Network Stimulator
+            Offline Simulator
           </Label>
-          <div className="flex items-center justify-between rounded-lg border border-border/50 bg-secondary/30 p-3">
-            <div className="flex items-center gap-3">
-              <Switch
-                id="network-mode"
-                checked={simulationState.isOffline}
-                onCheckedChange={onNetworkToggle}
-              />
-              <Label htmlFor="network-mode" className="cursor-pointer text-sm">
-                {simulationState.isOffline ? 'Offline Mode' : 'Connected'}
-              </Label>
-            </div>
+          <div className="flex items-center justify-between gap-3 rounded-lg border border-border/50 bg-secondary/30 p-3">
+            <Button
+              size="sm"
+              variant={simulationState.isOffline ? 'destructive' : 'outline'}
+              onClick={() => onNetworkToggle(!simulationState.isOffline)}
+            >
+              {simulationState.isOffline ? (
+                <Wifi className="mr-1 h-3 w-3" />
+              ) : (
+                <WifiOff className="mr-1 h-3 w-3" />
+              )}
+              {simulationState.isOffline ? 'Back Online' : 'Go Offline'}
+            </Button>
             {simulationState.isOffline && (
               <span className="flex items-center gap-1 rounded bg-red-500/20 px-2 py-0.5 text-xs text-red-400">
                 <span className="h-1.5 w-1.5 animate-pulse rounded-full bg-red-500" />
@@ -132,11 +131,11 @@ export function SimulationControlPanel({
           </p>
         </div>
 
-        {/* Roadblock Stimulator */}
+        {/* Roadblock Simulator */}
         <div className="space-y-3">
           <Label className="flex items-center gap-2 text-sm font-medium text-foreground">
             <Construction className="h-4 w-4 text-orange-500" />
-            Roadblock Stimulator
+            Roadblock Simulator
           </Label>
           <div className="flex gap-2">
             <Button

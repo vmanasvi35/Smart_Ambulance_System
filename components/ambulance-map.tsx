@@ -2,12 +2,18 @@
 
 import { useEffect, useRef, useState } from 'react'
 import type { AmbulanceTrip } from '@/lib/types'
+import type { Roadblock, SpawnedVehicle } from '@/lib/routing'
 
 interface AmbulanceMapProps {
   trips: AmbulanceTrip[]
   selectedTrip?: AmbulanceTrip | null
   onTripSelect?: (trip: AmbulanceTrip) => void
   showAllTrips?: boolean
+  trafficLevel?: 'low' | 'medium' | 'high'
+  roadblockMode?: boolean
+  roadblocks?: Roadblock[]
+  spawnedVehicles?: SpawnedVehicle[]
+  onRoadblockAdd?: (lat: number, lng: number) => void
   className?: string
 }
 
@@ -16,12 +22,19 @@ export function AmbulanceMap({
   selectedTrip,
   onTripSelect,
   showAllTrips = true,
+  trafficLevel = 'low',
+  roadblockMode = false,
+  roadblocks = [],
+  spawnedVehicles = [],
+  onRoadblockAdd,
   className = '',
 }: AmbulanceMapProps) {
   const mapRef = useRef<HTMLDivElement>(null)
   const mapInstanceRef = useRef<L.Map | null>(null)
   const markersRef = useRef<L.LayerGroup | null>(null)
   const routeRef = useRef<L.Polyline | null>(null)
+  const trafficLayerRef = useRef<L.LayerGroup | null>(null)
+  const simulationLayerRef = useRef<L.LayerGroup | null>(null)
   const [isReady, setIsReady] = useState(false)
   const [L, setL] = useState<typeof import('leaflet') | null>(null)
 
@@ -57,6 +70,8 @@ export function AmbulanceMap({
     }).addTo(mapInstanceRef.current)
 
     markersRef.current = L.layerGroup().addTo(mapInstanceRef.current)
+    trafficLayerRef.current = L.layerGroup().addTo(mapInstanceRef.current)
+    simulationLayerRef.current = L.layerGroup().addTo(mapInstanceRef.current)
 
     return () => {
       if (mapInstanceRef.current) {
@@ -67,10 +82,31 @@ export function AmbulanceMap({
   }, [isReady, L])
 
   useEffect(() => {
-    if (!L || !mapInstanceRef.current || !markersRef.current) return
+    if (!L || !mapInstanceRef.current || !onRoadblockAdd) return
+
+    const map = mapInstanceRef.current
+    const handleClick = (event: L.LeafletMouseEvent) => {
+      if (roadblockMode) {
+        onRoadblockAdd(event.latlng.lat, event.latlng.lng)
+      }
+    }
+
+    map.on('click', handleClick)
+    map.getContainer().style.cursor = roadblockMode ? 'crosshair' : ''
+
+    return () => {
+      map.off('click', handleClick)
+      map.getContainer().style.cursor = ''
+    }
+  }, [L, roadblockMode, onRoadblockAdd])
+
+  useEffect(() => {
+    if (!L || !mapInstanceRef.current || !markersRef.current || !trafficLayerRef.current || !simulationLayerRef.current) return
 
     // Clear existing markers
     markersRef.current.clearLayers()
+    trafficLayerRef.current.clearLayers()
+    simulationLayerRef.current.clearLayers()
     if (routeRef.current) {
       routeRef.current.remove()
       routeRef.current = null
@@ -103,6 +139,28 @@ export function AmbulanceMap({
         iconAnchor: [16, 16],
       })
     }
+
+    const createRoadblockIcon = () => {
+      return L.divIcon({
+        className: 'custom-roadblock-icon',
+        html: `
+          <div style="width: 30px; height: 30px; border-radius: 8px; display: flex; align-items: center; justify-content: center; background-color: #f97316; border: 2px solid white; box-shadow: 0 4px 10px rgba(0,0,0,0.35);">
+            <span style="color: white; font-weight: 800; font-size: 16px;">!</span>
+          </div>
+        `,
+        iconSize: [30, 30],
+        iconAnchor: [15, 15],
+      })
+    }
+
+    const routeColor =
+      selectedTrip?.route_condition === 'road_blocked'
+        ? '#ef4444'
+        : selectedTrip?.route_condition === 'heavy_congestion' || trafficLevel === 'high'
+          ? '#f97316'
+          : selectedTrip?.route_condition === 'moderate_traffic' || trafficLevel === 'medium'
+            ? '#eab308'
+            : '#22c55e'
 
     const createLocationIcon = (type: 'source' | 'destination') => {
       const color = type === 'source' ? '#22c55e' : '#ef4444'
@@ -159,20 +217,49 @@ export function AmbulanceMap({
       }
     })
 
+    roadblocks.forEach((roadblock) => {
+      L.marker([roadblock.lat, roadblock.lng], {
+        icon: createRoadblockIcon(),
+      })
+        .bindPopup('<strong>Roadblock:</strong> blocked segment detected')
+        .addTo(simulationLayerRef.current!)
+    })
+
+    spawnedVehicles.forEach((vehicle) => {
+      L.marker([vehicle.lat, vehicle.lng], {
+        icon: createAmbulanceIcon(true),
+      })
+        .bindPopup(`<strong>${vehicle.ambulanceId}</strong><br/>Simulated emergency vehicle`)
+        .addTo(simulationLayerRef.current!)
+    })
+
     // Draw route for selected trip
     if (selectedTrip?.route_data?.waypoints && mapInstanceRef.current) {
       const waypoints = selectedTrip.route_data.waypoints as [number, number][]
       routeRef.current = L.polyline(waypoints, {
-        color: selectedTrip.status === 'in_progress' ? '#ef4444' : '#3b82f6',
+        color: selectedTrip.status === 'in_progress' ? routeColor : '#3b82f6',
         weight: 4,
         opacity: 0.8,
         dashArray: selectedTrip.status === 'in_progress' ? undefined : '10, 10',
       }).addTo(mapInstanceRef.current)
 
+      if (trafficLevel !== 'low' || selectedTrip.route_condition === 'heavy_congestion') {
+        const trafficPoints = waypoints.filter((_, index) => index % 6 === 0)
+        trafficPoints.forEach(([lat, lng]) => {
+          L.circle([lat, lng], {
+            radius: trafficLevel === 'high' ? 320 : 190,
+            color: trafficLevel === 'high' ? '#f97316' : '#eab308',
+            fillColor: trafficLevel === 'high' ? '#f97316' : '#eab308',
+            fillOpacity: 0.18,
+            weight: 1,
+          }).addTo(trafficLayerRef.current!)
+        })
+      }
+
       // Fit bounds to show the route
       mapInstanceRef.current.fitBounds(routeRef.current.getBounds(), { padding: [50, 50] })
     }
-  }, [L, trips, selectedTrip, showAllTrips, onTripSelect])
+  }, [L, trips, selectedTrip, showAllTrips, onTripSelect, trafficLevel, roadblocks, spawnedVehicles])
 
   if (!isReady) {
     return (

@@ -6,7 +6,6 @@ import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/com
 import { Button } from '@/components/ui/button'
 import { AmbulanceMap } from '@/components/ambulance-map'
 import { StatusBadge } from '@/components/status-badge'
-import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
 import {
   Activity,
   AlertTriangle,
@@ -67,24 +66,26 @@ export default function PoliceControlRoom() {
     setLoading(false)
   }
 
-  const updateRouteCondition = async (tripId: string, condition: RouteCondition) => {
+  const respondToRouteAlert = async (trip: AmbulanceTrip, condition: RouteCondition, response: string) => {
+    const { data: { user } } = await supabase.auth.getUser()
+
     await supabase
       .from('ambulance_trips')
-      .update({ route_condition: condition, updated_at: new Date().toISOString() })
-      .eq('id', tripId)
-    
-    loadTrips()
-  }
-
-  const createAlert = async (tripId: string, alertType: string, message: string) => {
-    const { data: { user } } = await supabase.auth.getUser()
+      .update({
+        route_condition: condition,
+        updated_at: new Date().toISOString(),
+      })
+      .eq('id', trip.id)
     
     await supabase.from('police_alerts').insert({
-      trip_id: tripId,
-      alert_type: alertType,
-      message,
+      trip_id: trip.id,
+      alert_type: condition === 'clear' ? 'route_assessment' : 'traffic',
+      message: `${response} response issued for ${trip.ambulance_id}. Driver dashboard will handle navigation updates.`,
       assigned_police: user?.id,
+      alert_status: 'resolved',
     })
+
+    loadTrips()
   }
 
   const activeTrips = trips.filter(t => t.status === 'in_progress')
@@ -227,64 +228,66 @@ export default function PoliceControlRoom() {
                     </div>
                   </div>
 
-                  {/* Route Condition Selector */}
+                  {/* Police Response Actions */}
                   <div className="space-y-2">
-                    <label className="text-xs text-muted-foreground">Route Condition</label>
-                    <Select
-                      value={selectedTrip.route_condition}
-                      onValueChange={(v) => updateRouteCondition(selectedTrip.id, v as RouteCondition)}
-                    >
-                      <SelectTrigger className="bg-input/50">
-                        <SelectValue />
-                      </SelectTrigger>
-                      <SelectContent>
-                        <SelectItem value="clear">
-                          <div className="flex items-center gap-2">
-                            <CheckCircle className="h-4 w-4 text-green-500" />
-                            Clear Route
-                          </div>
-                        </SelectItem>
-                        <SelectItem value="moderate_traffic">
-                          <div className="flex items-center gap-2">
-                            <AlertTriangle className="h-4 w-4 text-yellow-500" />
-                            Moderate Traffic
-                          </div>
-                        </SelectItem>
-                        <SelectItem value="heavy_congestion">
-                          <div className="flex items-center gap-2">
-                            <AlertTriangle className="h-4 w-4 text-orange-500" />
-                            Heavy Congestion
-                          </div>
-                        </SelectItem>
-                        <SelectItem value="road_blocked">
-                          <div className="flex items-center gap-2">
-                            <XCircle className="h-4 w-4 text-red-500" />
-                            Road Blocked
-                          </div>
-                        </SelectItem>
-                      </SelectContent>
-                    </Select>
+                    <label className="text-xs text-muted-foreground">Police Response</label>
+                    <div className="grid grid-cols-2 gap-2">
+                      <Button
+                        size="sm"
+                        variant="secondary"
+                        onClick={() => respondToRouteAlert(selectedTrip, 'clear', 'Route Cleared')}
+                      >
+                        <CheckCircle className="mr-1 h-3 w-3 text-green-500" />
+                        Route Cleared
+                      </Button>
+                      <Button
+                        size="sm"
+                        variant="secondary"
+                        onClick={() => respondToRouteAlert(selectedTrip, 'heavy_congestion', 'Heavy Congestion')}
+                      >
+                        <AlertTriangle className="mr-1 h-3 w-3 text-orange-500" />
+                        Heavy Congestion
+                      </Button>
+                      <Button
+                        size="sm"
+                        variant="secondary"
+                        onClick={() => respondToRouteAlert(selectedTrip, 'heavy_congestion', 'Cannot Clear')}
+                      >
+                        <XCircle className="mr-1 h-3 w-3 text-yellow-500" />
+                        Cannot Clear
+                      </Button>
+                      <Button
+                        size="sm"
+                        variant="secondary"
+                        onClick={() => respondToRouteAlert(selectedTrip, 'road_blocked', 'Road Blocked')}
+                      >
+                        <XCircle className="mr-1 h-3 w-3 text-red-500" />
+                        Road Blocked
+                      </Button>
+                    </div>
                   </div>
 
-                  {/* Quick Actions */}
+                  <div className="rounded-lg border border-border/50 bg-secondary/30 p-3 text-xs text-muted-foreground">
+                    Traffic is detected automatically from ambulance telemetry and simulations. Police responses only confirm the condition; rerouting is handled by the driver dashboard.
+                  </div>
                   <div className="flex gap-2">
                     <Button
                       size="sm"
                       variant="secondary"
                       className="flex-1"
-                      onClick={() => createAlert(selectedTrip.id, 'traffic', 'Traffic alert issued')}
+                      disabled
                     >
                       <AlertTriangle className="mr-1 h-3 w-3" />
-                      Traffic Alert
+                      Auto Traffic Alerts
                     </Button>
                     <Button
                       size="sm"
                       variant="secondary"
                       className="flex-1"
-                      onClick={() => createAlert(selectedTrip.id, 'route_assessment', 'Route assessment requested')}
+                      disabled
                     >
                       <Navigation className="mr-1 h-3 w-3" />
-                      Assess Route
+                      Driver Rerouting
                     </Button>
                   </div>
                 </CardContent>

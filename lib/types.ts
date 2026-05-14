@@ -4,6 +4,8 @@ export type TripStatus = 'pending' | 'in_progress' | 'completed' | 'cancelled'
 
 export type RouteCondition = 'unknown' | 'clear' | 'moderate_traffic' | 'heavy_congestion' | 'road_blocked'
 
+export type TrafficLevel = 'low' | 'medium' | 'high'
+
 export type AlertType = 'traffic' | 'network_failure' | 'route_assessment' | 'general'
 
 export type AlertStatus = 'pending' | 'acknowledged' | 'resolved'

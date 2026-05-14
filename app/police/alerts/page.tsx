@@ -15,7 +15,7 @@ import {
   RefreshCw,
   Clock,
 } from 'lucide-react'
-import type { PoliceAlert, AlertStatus, AlertType } from '@/lib/types'
+import type { PoliceAlert, AlertStatus, AlertType, RouteCondition } from '@/lib/types'
 
 const alertTypeConfig: Record<AlertType, { icon: React.ElementType; color: string }> = {
   traffic: { icon: AlertTriangle, color: 'text-yellow-500' },
@@ -69,6 +69,27 @@ export default function AlertsPage() {
       .update({ alert_status: status, updated_at: new Date().toISOString() })
       .eq('id', alertId)
     
+    loadAlerts()
+  }
+
+  const respondToAlert = async (alert: PoliceAlert, condition: RouteCondition, response: string) => {
+    await supabase
+      .from('ambulance_trips')
+      .update({
+        route_condition: condition,
+        updated_at: new Date().toISOString(),
+      })
+      .eq('id', alert.trip_id)
+
+    await supabase
+      .from('police_alerts')
+      .update({
+        alert_status: 'resolved',
+        message: `${alert.message ?? ''} Police response: ${response}.`,
+        updated_at: new Date().toISOString(),
+      })
+      .eq('id', alert.id)
+
     loadAlerts()
   }
 
@@ -195,7 +216,7 @@ export default function AlertsPage() {
                           <Clock className="h-3 w-3" />
                           {formatDate(alert.created_at)}
                         </div>
-                        <div className="flex gap-2">
+                        <div className="flex flex-wrap gap-2">
                           {alert.alert_status === 'pending' && (
                             <Button
                               size="sm"
@@ -206,13 +227,36 @@ export default function AlertsPage() {
                             </Button>
                           )}
                           {alert.alert_status === 'acknowledged' && (
-                            <Button
-                              size="sm"
-                              onClick={() => updateAlertStatus(alert.id, 'resolved')}
-                            >
-                              <CheckCircle className="mr-1 h-3 w-3" />
-                              Resolve
-                            </Button>
+                            <>
+                              <Button
+                                size="sm"
+                                variant="secondary"
+                                onClick={() => respondToAlert(alert, 'clear', 'Route Cleared')}
+                              >
+                                Route Cleared
+                              </Button>
+                              <Button
+                                size="sm"
+                                variant="secondary"
+                                onClick={() => respondToAlert(alert, 'heavy_congestion', 'Heavy Congestion')}
+                              >
+                                Heavy Congestion
+                              </Button>
+                              <Button
+                                size="sm"
+                                variant="secondary"
+                                onClick={() => respondToAlert(alert, 'heavy_congestion', 'Cannot Clear')}
+                              >
+                                Cannot Clear
+                              </Button>
+                              <Button
+                                size="sm"
+                                onClick={() => respondToAlert(alert, 'road_blocked', 'Road Blocked')}
+                              >
+                                <CheckCircle className="mr-1 h-3 w-3" />
+                                Road Blocked
+                              </Button>
+                            </>
                           )}
                         </div>
                       </div>

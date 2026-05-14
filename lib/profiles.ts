@@ -5,17 +5,20 @@ type ProfileRoute = {
   role: UserRole
 }
 
-function getUserRole(user: User): UserRole {
-  // Check auth.app_metadata first (set by Supabase on signup)
+function getExplicitUserRole(user: User): UserRole | null {
   const appMetadataRole = user.app_metadata?.role
   if (appMetadataRole === 'police') return 'police'
+  if (appMetadataRole === 'driver') return 'driver'
   
-  // Fallback to user_metadata
   const userMetadataRole = user.user_metadata?.role
   if (userMetadataRole === 'police') return 'police'
+  if (userMetadataRole === 'driver') return 'driver'
   
-  // Default to driver
-  return 'driver'
+  return null
+}
+
+function getUserRole(user: User): UserRole {
+  return getExplicitUserRole(user) ?? 'driver'
 }
 
 function getFullName(user: User) {
@@ -44,6 +47,23 @@ export async function ensureUserProfile(
 
   if (selectError) {
     return { profile: null, error: selectError }
+  }
+
+  const explicitRole = getExplicitUserRole(user)
+
+  if (existingProfile && explicitRole && existingProfile.role !== explicitRole) {
+    const { data: updatedProfile, error: updateError } = await supabase
+      .from('profiles')
+      .update({ role: explicitRole })
+      .eq('id', user.id)
+      .select('role')
+      .single()
+
+    if (updateError) {
+      return { profile: null, error: updateError }
+    }
+
+    return { profile: updatedProfile as ProfileRoute, error: null }
   }
 
   if (existingProfile) {

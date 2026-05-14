@@ -10,44 +10,8 @@ import { Label } from '@/components/ui/label'
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
 import { MapPin, Navigation, Loader2, ArrowLeft } from 'lucide-react'
 import { BANGALORE_LOCATIONS, HOSPITALS } from '@/lib/types'
+import { calculateSmartRoute } from '@/lib/routing'
 import Link from 'next/link'
-
-// Generate a simple route between two points
-function generateRoute(
-  sourceLat: number,
-  sourceLng: number,
-  destLat: number,
-  destLng: number
-): [number, number][] {
-  const waypoints: [number, number][] = []
-  const steps = 20
-  
-  for (let i = 0; i <= steps; i++) {
-    const t = i / steps
-    // Add some slight randomization for realism
-    const jitter = (Math.random() - 0.5) * 0.002
-    const lat = sourceLat + (destLat - sourceLat) * t + jitter
-    const lng = sourceLng + (destLng - sourceLng) * t + jitter
-    waypoints.push([lat, lng])
-  }
-  
-  return waypoints
-}
-
-// Calculate distance between two points (Haversine)
-function calculateDistance(lat1: number, lng1: number, lat2: number, lng2: number): number {
-  const R = 6371 // Earth's radius in km
-  const dLat = ((lat2 - lat1) * Math.PI) / 180
-  const dLng = ((lng2 - lng1) * Math.PI) / 180
-  const a =
-    Math.sin(dLat / 2) * Math.sin(dLat / 2) +
-    Math.cos((lat1 * Math.PI) / 180) *
-      Math.cos((lat2 * Math.PI) / 180) *
-      Math.sin(dLng / 2) *
-      Math.sin(dLng / 2)
-  const c = 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a))
-  return R * c
-}
 
 export default function NewTripPage() {
   const [ambulanceId, setAmbulanceId] = useState('')
@@ -95,22 +59,11 @@ export default function NewTripPage() {
       return
     }
 
-    // Generate route and calculate distance
-    const routeWaypoints = generateRoute(
-      sourceLocation.lat,
-      sourceLocation.lng,
-      destLocation.lat,
-      destLocation.lng
-    )
-    
-    const distance = calculateDistance(
-      sourceLocation.lat,
-      sourceLocation.lng,
-      destLocation.lat,
-      destLocation.lng
-    )
-    
-    const eta = Math.round(distance * 3) // ~3 min per km in city traffic
+    const route = await calculateSmartRoute({
+      source: [sourceLocation.lat, sourceLocation.lng],
+      destination: [destLocation.lat, destLocation.lng],
+      trafficLevel: 'low',
+    })
 
     const { error: insertError } = await supabase.from('ambulance_trips').insert({
       driver_id: user.id,
@@ -123,15 +76,11 @@ export default function NewTripPage() {
       dest_lng: destLocation.lng,
       current_lat: sourceLocation.lat,
       current_lng: sourceLocation.lng,
-      eta,
-      distance,
+      eta: route.estimatedTime,
+      distance: route.totalDistance,
       status: 'pending',
       route_condition: 'unknown',
-      route_data: {
-        waypoints: routeWaypoints,
-        totalDistance: distance,
-        estimatedTime: eta,
-      },
+      route_data: route,
     })
 
     if (insertError) {
