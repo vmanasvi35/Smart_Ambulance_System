@@ -124,6 +124,23 @@
   background: oklch(0.16 0.025 240 / 0.8);
   backdrop-filter: blur(12px);
   border: 1px solid oklch(0.28 0.03 240 / 0.5);
+  box-shadow: 0 8px 28px oklch(0 0 0 / 0.22);
+}
+
+.glass-card-hover {
+  transition:
+    transform 0.3s ease,
+    border-color 0.3s ease,
+    box-shadow 0.3s ease;
+}
+
+.glass-card-hover:hover {
+  transform: translateY(-4px);
+  border-color: oklch(0.65 0.2 200 / 0.45);
+  box-shadow:
+    0 14px 36px oklch(0 0 0 / 0.3),
+    0 0 28px oklch(0.7 0.12 220 / 0.28),
+    0 0 56px oklch(0.65 0.16 210 / 0.16);
 }
 
 /* Pulse Animation for Active Trips */
@@ -147,4 +164,137 @@
 
 .status-emergency {
   box-shadow: 0 0 12px oklch(0.55 0.22 25 / 0.5);
+}
+
+/* Landing page motion helpers */
+@keyframes scan-line {
+  0% {
+    transform: translateY(0);
+    opacity: 0;
+  }
+  10% {
+    opacity: 1;
+  }
+  90% {
+    opacity: 1;
+  }
+  100% {
+    transform: translateY(320px);
+    opacity: 0;
+  }
+}
+
+.animate-scan {
+  animation: scan-line 4.5s ease-in-out infinite;
+}
+
+@keyframes float-soft {
+  0%,
+  100% {
+    transform: translateY(0);
+  }
+  50% {
+    transform: translateY(-6px);
+  }
+}
+
+.animate-float-soft {
+  animation: float-soft 3.5s ease-in-out infinite;
+}
+
+@keyframes float-card {
+  0%,
+  100% {
+    transform: translateY(0);
+  }
+  50% {
+    transform: translateY(-5px);
+  }
+}
+
+.animate-float-card {
+  animation: float-card 4.2s ease-in-out infinite;
+  will-change: transform;
+}
+
+/* Selective glow utilities */
+.glow-cta {
+  box-shadow:
+    0 0 0 1px oklch(0.55 0.22 25 / 0.35),
+    0 8px 24px oklch(0.55 0.22 25 / 0.28);
+}
+
+.glow-cta:hover {
+  box-shadow:
+    0 0 0 1px oklch(0.55 0.22 25 / 0.5),
+    0 10px 30px oklch(0.55 0.22 25 / 0.4);
+}
+
+.glow-nav-active {
+  box-shadow: 0 0 16px oklch(0.65 0.2 200 / 0.18);
+}
+
+.glow-icon-emergency {
+  box-shadow: 0 0 14px oklch(0.55 0.22 25 / 0.35);
+}
+
+.glow-icon-info {
+  box-shadow: 0 0 14px oklch(0.65 0.2 200 / 0.3);
+}
+
+.glow-icon-success {
+  box-shadow: 0 0 14px oklch(0.55 0.22 150 / 0.3);
+}
+
+.glow-workflow-active {
+  box-shadow:
+    0 10px 28px oklch(0 0 0 / 0.3),
+    0 0 22px oklch(0.55 0.22 25 / 0.22);
+}
+
+.glow-workflow-hover:hover {
+  box-shadow:
+    0 12px 30px oklch(0 0 0 / 0.28),
+    0 0 20px oklch(0.65 0.2 200 / 0.16);
+}
+
+html {
+  scroll-behavior: smooth;
+  scroll-padding-top: 5rem;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .animate-float-soft,
+  .animate-float-card,
+  .animate-scan,
+  .animate-pulse-emergency {
+    animation: none;
+  }
+}
+
+/* Leaflet map marker / route polish */
+.map-marker-pulse {
+  animation: map-pulse 1.8s ease-out infinite;
+}
+
+@keyframes map-pulse {
+  0% {
+    box-shadow: 0 0 0 0 rgba(239, 68, 68, 0.45);
+  }
+  70% {
+    box-shadow: 0 0 0 14px rgba(239, 68, 68, 0);
+  }
+  100% {
+    box-shadow: 0 0 0 0 rgba(239, 68, 68, 0);
+  }
+}
+
+.map-route-animated {
+  animation: route-dash 1.2s linear infinite;
+}
+
+@keyframes route-dash {
+  to {
+    stroke-dashoffset: -22;
+  }
 }

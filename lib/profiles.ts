@@ -78,6 +78,15 @@ export async function ensureUserProfile(
         full_name: getFullName(user),
         email: user.email ?? '',
         role: getUserRole(user),
+        // Driver-specific fields
+        age: user.user_metadata?.age,
+        hospital: user.user_metadata?.hospital,
+        experience_years: user.user_metadata?.experience_years,
+        driving_license: user.user_metadata?.driving_license,
+        // Police-specific fields
+        police_id: user.user_metadata?.police_id,
+        police_station: user.user_metadata?.police_station,
+        badge_number: user.user_metadata?.badge_number,
       },
       { onConflict: 'id' },
     )

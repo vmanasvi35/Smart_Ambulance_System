@@ -1,4 +1,4 @@
-import type { PoliceDecision, RouteCondition, RouteState, TrafficLevel } from '@/lib/types'
+import type { ClearanceStatus, PoliceDecision, RouteCondition, RouteState, TrafficLevel } from '@/lib/types'
 
 export type LatLngTuple = [number, number]
 
@@ -26,6 +26,7 @@ export interface SmartRouteData {
   lastReroutedAt?: string
   lastReroutedFor?: RouteCondition
   routeState?: RouteState
+  clearanceStatus?: ClearanceStatus
   policeDecision?: PoliceDecision
   policeDecisionAt?: string
   policeMessage?: string

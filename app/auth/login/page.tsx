@@ -8,6 +8,7 @@ import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card'
+import { AuthShell } from '@/components/auth/auth-shell'
 import { Ambulance, Loader2 } from 'lucide-react'
 import { ensureUserProfile, getDashboardPath } from '@/lib/profiles'
 
@@ -49,10 +50,10 @@ export default function LoginPage() {
   }
 
   return (
-    <div className="flex min-h-screen items-center justify-center bg-background p-4">
-      <div className="w-full max-w-md space-y-8">
+    <AuthShell>
+      <div className="w-full space-y-8">
         <div className="flex flex-col items-center gap-4">
-          <div className="flex h-16 w-16 items-center justify-center rounded-2xl bg-primary/10 text-primary">
+          <div className="glow-icon-emergency flex h-16 w-16 items-center justify-center rounded-2xl bg-emergency/15 text-emergency ring-1 ring-emergency/40">
             <Ambulance className="h-8 w-8" />
           </div>
           <div className="text-center">
@@ -61,7 +62,7 @@ export default function LoginPage() {
           </div>
         </div>
 
-        <Card className="glass-card border-border/50">
+        <Card className="glass-card border-white/10 shadow-xl shadow-black/25">
           <CardHeader>
             <CardTitle className="text-xl">Sign In</CardTitle>
             <CardDescription>Enter your credentials to access the dashboard</CardDescription>
@@ -73,7 +74,7 @@ export default function LoginPage() {
                   {error}
                 </div>
               )}
-              
+
               <div className="space-y-2">
                 <Label htmlFor="email">Email</Label>
                 <Input
@@ -83,7 +84,7 @@ export default function LoginPage() {
                   value={email}
                   onChange={(e) => setEmail(e.target.value)}
                   required
-                  className="bg-input/50"
+                  className="border-white/10 bg-white/5"
                 />
               </div>
 
@@ -96,11 +97,15 @@ export default function LoginPage() {
                   value={password}
                   onChange={(e) => setPassword(e.target.value)}
                   required
-                  className="bg-input/50"
+                  className="border-white/10 bg-white/5"
                 />
               </div>
 
-              <Button type="submit" className="w-full" disabled={loading}>
+              <Button
+                type="submit"
+                className="glow-cta w-full bg-emergency text-white hover:bg-emergency/90"
+                disabled={loading}
+              >
                 {loading ? (
                   <>
                     <Loader2 className="mr-2 h-4 w-4 animate-spin" />
@@ -114,13 +119,16 @@ export default function LoginPage() {
 
             <div className="mt-6 text-center text-sm text-muted-foreground">
               {"Don't have an account? "}
-              <Link href="/auth/signup" className="text-primary hover:underline">
+              <Link
+                href="/auth/signup"
+                className="text-primary transition-colors hover:text-primary/80 hover:underline"
+              >
                 Sign up
               </Link>
             </div>
           </CardContent>
         </Card>
       </div>
-    </div>
+    </AuthShell>
   )
 }

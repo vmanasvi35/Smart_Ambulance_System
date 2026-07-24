@@ -120,9 +120,9 @@ export function AmbulanceMap({
         className: 'custom-ambulance-icon',
         html: `
           <div style="position: relative;">
-            <div style="width: 32px; height: 32px; border-radius: 50%; display: flex; align-items: center; justify-content: center; background-color: ${
+            <div class="${isActive ? 'map-marker-pulse' : ''}" style="width: 34px; height: 34px; border-radius: 50%; display: flex; align-items: center; justify-content: center; background-color: ${
               isActive ? '#ef4444' : '#3b82f6'
-            }; box-shadow: 0 4px 6px rgba(0,0,0,0.3);">
+            }; box-shadow: 0 0 16px ${isActive ? 'rgba(239,68,68,0.55)' : 'rgba(59,130,246,0.35)'}, 0 4px 6px rgba(0,0,0,0.3);">
               <svg xmlns="http://www.w3.org/2000/svg" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="white" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
                 <path d="M10 10H6"></path>
                 <path d="M14 18V6a2 2 0 0 0-2-2H4a2 2 0 0 0-2 2v11a1 1 0 0 0 1 1h2"></path>
@@ -132,11 +132,10 @@ export function AmbulanceMap({
                 <circle cx="7" cy="18" r="2"></circle>
               </svg>
             </div>
-            ${isActive ? '<div style="position: absolute; top: -4px; right: -4px; width: 12px; height: 12px; background-color: #ef4444; border-radius: 50%; animation: ping 1s infinite;"></div>' : ''}
           </div>
         `,
-        iconSize: [32, 32],
-        iconAnchor: [16, 16],
+        iconSize: [34, 34],
+        iconAnchor: [17, 17],
       })
     }
 
@@ -145,7 +144,7 @@ export function AmbulanceMap({
         className: 'custom-roadblock-icon',
         html: `
           <div style="width: 30px; height: 30px; border-radius: 8px; display: flex; align-items: center; justify-content: center; background-color: #f97316; border: 2px solid white; box-shadow: 0 4px 10px rgba(0,0,0,0.35);">
-            <span style="color: white; font-weight: 800; font-size: 16px;">!</span>
+            <span style="color: white; font-weight: 800; font-size: 14px;">🚧</span>
           </div>
         `,
         iconSize: [30, 30],
@@ -163,12 +162,24 @@ export function AmbulanceMap({
             : '#22c55e'
 
     const createLocationIcon = (type: 'source' | 'destination') => {
-      const color = type === 'source' ? '#22c55e' : '#ef4444'
+      if (type === 'destination') {
+        return L.divIcon({
+          className: 'custom-location-icon',
+          html: `
+            <div class="map-marker-pulse" style="width: 32px; height: 32px; border-radius: 50%; background: rgba(34,197,94,0.15); border: 2px solid #22c55e; display: flex; align-items: center; justify-content: center; box-shadow: 0 0 14px rgba(34,197,94,0.35);">
+              <span style="font-size: 14px; line-height: 1;">🏥</span>
+            </div>
+          `,
+          iconSize: [32, 32],
+          iconAnchor: [16, 16],
+        })
+      }
+
       return L.divIcon({
         className: 'custom-location-icon',
         html: `
-          <div style="width: 24px; height: 24px; border-radius: 50%; background-color: #1e293b; border: 2px solid ${color}; display: flex; align-items: center; justify-content: center;">
-            <div style="width: 8px; height: 8px; border-radius: 50%; background-color: ${color};"></div>
+          <div style="width: 24px; height: 24px; border-radius: 50%; background-color: #1e293b; border: 2px solid #22c55e; display: flex; align-items: center; justify-content: center;">
+            <div style="width: 8px; height: 8px; border-radius: 50%; background-color: #22c55e;"></div>
           </div>
         `,
         iconSize: [24, 24],
@@ -238,18 +249,21 @@ export function AmbulanceMap({
       const waypoints = selectedTrip.route_data.waypoints as [number, number][]
       routeRef.current = L.polyline(waypoints, {
         color: selectedTrip.status === 'in_progress' ? routeColor : '#3b82f6',
-        weight: 4,
-        opacity: 0.8,
-        dashArray: selectedTrip.status === 'in_progress' ? undefined : '10, 10',
+        weight: 5,
+        opacity: 0.85,
+        className: 'map-route-animated',
+        dashArray: selectedTrip.status === 'in_progress' ? '12 10' : '10, 10',
       }).addTo(mapInstanceRef.current)
 
-      if (trafficLevel !== 'low' || selectedTrip.route_condition === 'heavy_congestion') {
+      if (trafficLevel !== 'low' || selectedTrip.route_condition === 'heavy_congestion' || selectedTrip.route_condition === 'moderate_traffic') {
         const trafficPoints = waypoints.filter((_, index) => index % 6 === 0)
         trafficPoints.forEach(([lat, lng]) => {
+          const high =
+            trafficLevel === 'high' || selectedTrip.route_condition === 'heavy_congestion'
           L.circle([lat, lng], {
-            radius: trafficLevel === 'high' ? 320 : 190,
-            color: trafficLevel === 'high' ? '#f97316' : '#eab308',
-            fillColor: trafficLevel === 'high' ? '#f97316' : '#eab308',
+            radius: high ? 320 : 190,
+            color: high ? '#f97316' : '#eab308',
+            fillColor: high ? '#f97316' : '#eab308',
             fillOpacity: 0.18,
             weight: 1,
           }).addTo(trafficLayerRef.current!)
@@ -257,7 +271,11 @@ export function AmbulanceMap({
       }
 
       // Fit bounds to show the route
-      mapInstanceRef.current.fitBounds(routeRef.current.getBounds(), { padding: [50, 50] })
+      mapInstanceRef.current.fitBounds(routeRef.current.getBounds(), {
+        padding: [50, 50],
+        animate: true,
+        duration: 0.6,
+      })
     }
   }, [L, trips, selectedTrip, showAllTrips, onTripSelect, trafficLevel, roadblocks, spawnedVehicles])
 

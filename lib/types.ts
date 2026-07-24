@@ -2,9 +2,13 @@ export type UserRole = 'driver' | 'police'
 
 export type TripStatus = 'pending' | 'in_progress' | 'completed' | 'cancelled'
 
+export type TripWorkflowStatus = 'Available' | 'Assigned' | 'Accepted' | 'Going to Pickup' | 'Patient Onboard' | 'En Route Hospital' | 'Completed' | 'Cancelled'
+
 export type RouteCondition = 'unknown' | 'clear' | 'moderate_traffic' | 'heavy_congestion' | 'road_blocked'
 
 export type TrafficLevel = 'low' | 'medium' | 'high'
+
+export type ClearanceStatus = 'pending' | 'clearing' | 'cleared'
 
 export type RouteState =
   | 'NORMAL'
@@ -26,6 +30,15 @@ export interface Profile {
   email: string
   role: UserRole
   created_at: string
+  // Driver-specific fields
+  age?: number
+  hospital?: string
+  experience_years?: number
+  driving_license?: string
+  // Police-specific fields
+  police_id?: string
+  police_station?: string
+  badge_number?: string
 }
 
 export interface AmbulanceTrip {
@@ -56,6 +69,7 @@ export interface RouteData {
   waypoints: [number, number][]
   totalDistance: number
   estimatedTime: number
+  clearanceStatus?: ClearanceStatus
 }
 
 export interface PoliceAlert {
