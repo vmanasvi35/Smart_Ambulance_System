@@ -1,179 +1,73 @@
 'use client'
 
-import { useState, useEffect, useCallback, type FormEvent } from 'react'
+import { useState, useEffect, useCallback, useMemo, useRef } from 'react'
 import { motion, AnimatePresence } from 'framer-motion'
 import { DispatchSidebar } from '@/components/dispatch/dispatch-sidebar'
 import { DispatchTopbar } from '@/components/dispatch/dispatch-topbar'
 import { DispatchStatCards } from '@/components/dispatch/dispatch-stat-cards'
-import { DispatchAmbulanceList, Ambulance, AmbulanceStatus } from '@/components/dispatch/dispatch-ambulance-list'
+import { DispatchAmbulanceList, Ambulance, isAmbulanceAvailable } from '@/components/dispatch/dispatch-ambulance-list'
 import { DispatchEmergencyQueue, EmergencyRequest } from '@/components/dispatch/dispatch-emergency-queue'
 import { DispatchActivityTimeline, ActivityLog } from '@/components/dispatch/dispatch-activity-timeline'
 import { AmbulanceMap } from '@/components/ambulance-map'
-import { calculateSmartRoute } from '@/lib/routing'
+import { calculateSmartRoute, findNearestHospital } from '@/lib/routing'
 import { createClient } from '@/lib/supabase/client'
 import { BANGALORE_LOCATIONS, HOSPITALS, AmbulanceTrip } from '@/lib/types'
-import { X, AlertCircle, ShieldAlert, LogIn, Plus } from 'lucide-react'
+import {
+  generateIncidentId,
+  normalizeTemplatePriority,
+  pickRandomEmergencyTemplate,
+} from '@/lib/emergency-templates'
+import { X, AlertCircle, Plus, Loader2 } from 'lucide-react'
 import { Button } from '@/components/ui/button'
-import { Input } from '@/components/ui/input'
-import { Textarea } from '@/components/ui/textarea'
-import Link from 'next/link'
 import { broadcastTripNotification } from '@/lib/notifications'
 import { TRIP_WORKFLOW_STATUS, normalizeTripWorkflowStatus } from '@/lib/trip-status'
-
-// Initial Mock emergencies
-const INITIAL_EMERGENCIES: EmergencyRequest[] = [
-  {
-    id: '501',
-    pickupLocation: 'BTM Layout',
-    pickupLat: 12.9166,
-    pickupLng: 77.6101,
-    destinationHospital: 'Apollo Hospital',
-    destLat: 12.9141,
-    destLng: 77.5950,
-    priority: 'critical',
-    timeAgo: '2m ago',
-    status: 'pending',
-  },
-  {
-    id: '502',
-    pickupLocation: 'Marathahalli',
-    pickupLat: 12.9591,
-    pickupLng: 77.6974,
-    destinationHospital: 'Fortis Hospital',
-    destLat: 12.9600,
-    destLng: 77.6416,
-    priority: 'high',
-    timeAgo: '5m ago',
-    status: 'pending',
-  },
-  {
-    id: '503',
-    pickupLocation: 'Electronic City',
-    pickupLat: 12.8399,
-    pickupLng: 77.6770,
-    destinationHospital: 'Narayana Health',
-    destLat: 12.8834,
-    destLng: 77.5987,
-    priority: 'medium',
-    timeAgo: '8m ago',
-    status: 'pending',
-  },
-  {
-    id: '504',
-    pickupLocation: 'Yelahanka',
-    pickupLat: 13.1007,
-    pickupLng: 77.5963,
-    destinationHospital: 'Columbia Asia Hospital',
-    destLat: 12.9698,
-    destLng: 77.7499,
-    priority: 'low',
-    timeAgo: '12m ago',
-    status: 'pending',
-  },
-]
-
-// Fallback mock drivers if profiles table is empty
-const MOCK_FALLBACK_DRIVERS = [
-  { id: 'mock-d1', full_name: 'Rajesh Kumar', email: 'rajesh@ambulance.com' },
-  { id: 'mock-d2', full_name: 'Amit Sharma', email: 'amit@ambulance.com' },
-  { id: 'mock-d3', full_name: 'Priya Patel', email: 'priya@ambulance.com' },
-  { id: 'mock-d4', full_name: 'Sneha Reddy', email: 'sneha@ambulance.com' },
-]
-
-const getStoredEmergencies = (): EmergencyRequest[] => {
-  if (typeof window === 'undefined') return INITIAL_EMERGENCIES
-
-  try {
-    const saved = window.localStorage.getItem('dispatch-emergencies')
-    if (!saved) return INITIAL_EMERGENCIES
-
-    const parsed = JSON.parse(saved)
-    if (Array.isArray(parsed)) return parsed
-  } catch {
-    // fall back to seeded data
-  }
-
-  return INITIAL_EMERGENCIES
-}
-
-const persistEmergencies = (emergencies: EmergencyRequest[]) => {
-  if (typeof window === 'undefined') return
-
-  try {
-    window.localStorage.setItem('dispatch-emergencies', JSON.stringify(emergencies))
-  } catch {
-    // ignore persistence failures
-  }
-}
+import { fetchRecentActivity, formatActivityClock } from '@/lib/activity-logs'
+import {
+  formatGpsRefreshInterval,
+  getStoredGpsRefreshInterval,
+  GPS_REFRESH_INTERVAL_STORAGE_KEY,
+  GPS_REFRESH_INTERVALS,
+  type GpsRefreshInterval,
+} from '@/lib/dispatch-settings'
 
 export default function DispatchDashboard() {
   const [activeSection, setActiveSection] = useState('control-room')
   const [ambulances, setAmbulances] = useState<Ambulance[]>([])
-  const [emergencies, setEmergencies] = useState<EmergencyRequest[]>(getStoredEmergencies)
+  const [emergencies, setEmergencies] = useState<EmergencyRequest[]>([])
   const [logs, setLogs] = useState<ActivityLog[]>([])
+  const [gpsRefreshInterval, setGpsRefreshInterval] = useState<GpsRefreshInterval>(getStoredGpsRefreshInterval)
 
   // Supabase states
-  const [isAuthenticated, setIsAuthenticated] = useState<boolean | null>(null)
-  const [userEmail, setUserEmail] = useState<string | null>(null)
   const [loading, setLoading] = useState(true)
 
   // Map-related state
   const [trips, setTrips] = useState<AmbulanceTrip[]>([])
   const [selectedTrip, setSelectedTrip] = useState<AmbulanceTrip | null>(null)
+  const [assignmentPreviewTrip, setAssignmentPreviewTrip] = useState<AmbulanceTrip | null>(null)
+  const selectedTripIdRef = useRef<string | null>(null)
 
   // Modal-related state
   const [assigningEmergency, setAssigningEmergency] = useState<EmergencyRequest | null>(null)
-  const [isCreateModalOpen, setIsCreateModalOpen] = useState(false)
+  const [isAssigning, setIsAssigning] = useState(false)
   const [isCreatingEmergency, setIsCreatingEmergency] = useState(false)
   const [createError, setCreateError] = useState<string | null>(null)
-  const [createForm, setCreateForm] = useState({
-    emergencyType: '',
-    patientName: '',
-    pickupLocation: '',
-    destinationHospital: '',
-    notes: '',
-    priority: 'critical' as EmergencyRequest['priority'],
-  })
+  const [assignError, setAssignError] = useState<string | null>(null)
 
   const supabase = createClient()
 
-  const resetCreateForm = useCallback(() => {
-    setCreateForm({
-      emergencyType: '',
-      patientName: '',
-      pickupLocation: '',
-      destinationHospital: '',
-      notes: '',
-      priority: 'critical',
-    })
-  }, [])
-
-  const getCoordinatesForRequest = useCallback((pickupLocation: string, destinationHospital: string) => {
-    const pickupMatch = BANGALORE_LOCATIONS.find((place) => place.name.toLowerCase() === pickupLocation.trim().toLowerCase())
-    const hospitalMatch = HOSPITALS.find((hospital) => hospital.name.toLowerCase() === destinationHospital.trim().toLowerCase())
-
-    return {
-      pickupLat: pickupMatch?.lat ?? 12.9716,
-      pickupLng: pickupMatch?.lng ?? 77.6412,
-      destLat: hospitalMatch?.lat ?? 12.9592,
-      destLng: hospitalMatch?.lng ?? 77.6489,
-    }
-  }, [])
+  useEffect(() => {
+    selectedTripIdRef.current = selectedTrip?.id ?? null
+  }, [selectedTrip])
 
   // Load drivers & active trips from Supabase
   const loadData = useCallback(async () => {
-    // Check Auth
-    const { data: { user } } = await supabase.auth.getUser()
-    setIsAuthenticated(!!user)
-    setUserEmail(user?.email ?? null)
-
-    // Load registered driver profiles
+    // Load registered driver profiles (authenticated drivers only)
     const { data: profilesData } = await supabase
       .from('profiles')
       .select('*')
       .eq('role', 'driver')
 
-    const dbDrivers = profilesData && profilesData.length > 0 ? profilesData : MOCK_FALLBACK_DRIVERS
+    const dbDrivers = profilesData ?? []
 
     // Load active trips
     const { data: tripsData } = await supabase
@@ -200,7 +94,7 @@ export default function DispatchDashboard() {
         return {
           id: activeTrip.ambulance_id || ambId,
           driverName: driver.full_name,
-          status: status as any, // Cast to any to accept new lifecycle strings
+          status,
           locationName: activeTrip.source || locationPreset.name,
           lat: activeTrip.current_lat ?? activeTrip.source_lat ?? locationPreset.lat,
           lng: activeTrip.current_lng ?? activeTrip.source_lng ?? locationPreset.lng,
@@ -212,7 +106,7 @@ export default function DispatchDashboard() {
       return {
         id: ambId,
         driverName: driver.full_name,
-        status: TRIP_WORKFLOW_STATUS.available as any,
+        status: TRIP_WORKFLOW_STATUS.available,
         locationName: locationPreset.name,
         lat: locationPreset.lat,
         lng: locationPreset.lng,
@@ -255,257 +149,466 @@ export default function DispatchDashboard() {
 
     setTrips(mapTrips)
 
-    // Focus map on the selected trip if it's still active
-    if (selectedTrip) {
-      const currentActiveSelected = activeTrips.find((t) => t.id === selectedTrip.id)
-      if (currentActiveSelected) {
-        setSelectedTrip(currentActiveSelected)
-      } else {
-        setSelectedTrip(null)
-      }
+    // Keep map focus stable across refreshes (avoid selectedTrip dependency loops)
+    const focusedId = selectedTripIdRef.current
+    if (focusedId) {
+      const currentActiveSelected =
+        activeTrips.find((t) => t.id === focusedId) ??
+        mapTrips.find((t) => t.id === focusedId && t.status !== 'completed') ??
+        null
+      setSelectedTrip(currentActiveSelected)
     }
 
-    // Load recent activity logs from active trips
-    const generatedLogs: ActivityLog[] = []
-    activeTrips.forEach((trip) => {
-      const timeStr = new Date(trip.created_at).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })
-      
-      generatedLogs.push({
-        id: `log-${trip.id}-assigned`,
-        type: 'assigned',
-        ambulanceId: trip.ambulance_id,
-        driverName: trip.driver?.full_name || 'Driver',
-        location: trip.source,
-        timestamp: timeStr,
-        message: `Ambulance assigned to incident at ${trip.source}`,
-      })
+    const activityRows = await fetchRecentActivity(supabase, 20)
+    setLogs(
+      activityRows.map((row) => {
+        const event = row.event_type
+        const type: ActivityLog['type'] =
+          event.includes('accepted')
+            ? 'accepted'
+            : event.includes('onboard') || event.includes('pickup')
+              ? 'picked_up'
+              : event.includes('completed') || event.includes('hospital')
+                ? 'completed'
+                : event.includes('en_route')
+                  ? 'reached'
+                  : 'assigned'
 
-      if (trip.status === 'in_progress') {
-        generatedLogs.push({
-          id: `log-${trip.id}-accepted`,
-          type: 'accepted',
-          ambulanceId: trip.ambulance_id,
-          driverName: trip.driver?.full_name || 'Driver',
-          timestamp: timeStr,
-          message: `Driver accepted dispatch`,
-        })
-      }
-    })
-    setLogs(generatedLogs)
+        return {
+          id: row.id,
+          type,
+          ambulanceId: row.ambulance_id ?? '—',
+          driverName: String(row.metadata?.driverName ?? 'System'),
+          location: undefined,
+          timestamp: formatActivityClock(row.created_at),
+          message: row.message,
+        }
+      }),
+    )
 
-    try {
-      const { data: emergencyRows, error: emergencyError } = await supabase
-        .from('emergency_requests')
-        .select('*')
-        .order('created_at', { ascending: false })
+    const { data: emergencyRows, error: emergencyError } = await supabase
+      .from('emergency_requests')
+      .select('*')
+      .in('status', ['pending'])
+      .order('created_at', { ascending: false })
 
-      if (!emergencyError && emergencyRows && emergencyRows.length > 0) {
-        const normalizedEmergencies = emergencyRows.map((row: any) => ({
-          id: String(row.id ?? `REQ-${Math.random().toString(36).slice(2, 8)}`),
-          pickupLocation: row.pickup_location ?? row.pickupLocation ?? 'Unknown location',
-          pickupLat: Number(row.pickup_lat ?? row.pickupLat ?? 12.9716),
-          pickupLng: Number(row.pickup_lng ?? row.pickupLng ?? 77.6412),
-          destinationHospital: row.destination_hospital ?? row.destinationHospital ?? 'Apollo Hospital',
-          destLat: Number(row.dest_lat ?? row.destLat ?? 12.9141),
-          destLng: Number(row.dest_lng ?? row.destLng ?? 77.595),
-          priority: (row.priority ?? 'critical') as EmergencyRequest['priority'],
-          timeAgo: row.created_at ? 'Recently created' : 'Just now',
-          status: (row.status ?? 'pending') as EmergencyRequest['status'],
-          patientName: row.patient_name ?? row.patientName,
-          notes: row.notes,
-          emergencyType: row.emergency_type ?? row.emergencyType,
-          createdAt: row.created_at,
-        }))
-
-        setEmergencies(normalizedEmergencies)
-        persistEmergencies(normalizedEmergencies)
-      } else {
-        const storedEmergencies = getStoredEmergencies()
-        setEmergencies(storedEmergencies)
-        persistEmergencies(storedEmergencies)
-      }
-    } catch {
-      const storedEmergencies = getStoredEmergencies()
-      setEmergencies(storedEmergencies)
-      persistEmergencies(storedEmergencies)
+    if (!emergencyError && emergencyRows) {
+      const normalizedEmergencies = emergencyRows.map((row: any) => ({
+        id: String(row.id),
+        incidentId: row.incident_id ?? undefined,
+        pickupLocation: row.pickup_location ?? 'Unknown location',
+        pickupLat: Number(row.pickup_lat ?? 12.9716),
+        pickupLng: Number(row.pickup_lng ?? 77.6412),
+        destinationHospital: row.destination_hospital ?? 'Apollo Hospital',
+        destLat: Number(row.dest_lat ?? 12.9141),
+        destLng: Number(row.dest_lng ?? 77.595),
+        priority: (row.priority ?? 'critical') as EmergencyRequest['priority'],
+        timeAgo: row.created_at ? 'Recently created' : 'Just now',
+        status: (row.status ?? 'pending') as EmergencyRequest['status'],
+        patientName: row.patient_name ?? undefined,
+        age: row.age ?? undefined,
+        notes: row.notes ?? undefined,
+        emergencyType: row.emergency_type ?? undefined,
+        createdAt: row.created_at,
+        eta: row.eta ?? undefined,
+        distance: row.distance ?? undefined,
+      }))
+      setEmergencies(normalizedEmergencies)
+    } else {
+      setEmergencies([])
     }
 
     setLoading(false)
-  }, [supabase, selectedTrip])
+  }, [supabase])
 
   // Setup database real-time subscription
   useEffect(() => {
     loadData()
 
-    const channel = supabase
+    const tripsChannel = supabase
       .channel('dispatch-dashboard-trips')
       .on(
         'postgres_changes',
         { event: '*', schema: 'public', table: 'ambulance_trips' },
         () => {
           loadData()
-        }
+        },
+      )
+      .subscribe()
+
+    const emergenciesChannel = supabase
+      .channel('dispatch-dashboard-emergencies')
+      .on(
+        'postgres_changes',
+        { event: '*', schema: 'public', table: 'emergency_requests' },
+        () => {
+          loadData()
+        },
+      )
+      .subscribe()
+
+    const activityChannel = supabase
+      .channel('dispatch-dashboard-activity')
+      .on(
+        'postgres_changes',
+        { event: '*', schema: 'public', table: 'activity_logs' },
+        () => {
+          loadData()
+        },
       )
       .subscribe()
 
     return () => {
-      supabase.removeChannel(channel)
+      supabase.removeChannel(tripsChannel)
+      supabase.removeChannel(emergenciesChannel)
+      supabase.removeChannel(activityChannel)
     }
   }, [loadData, supabase])
 
-  // Assign ambulance in Supabase
+  useEffect(() => {
+    window.localStorage.setItem(GPS_REFRESH_INTERVAL_STORAGE_KEY, String(gpsRefreshInterval))
+    window.dispatchEvent(new StorageEvent('storage', {
+      key: GPS_REFRESH_INTERVAL_STORAGE_KEY,
+      newValue: String(gpsRefreshInterval),
+    }))
+  }, [gpsRefreshInterval])
+
+  // Assign ambulance in Supabase — exactly one ambulance per emergency
   const handleAssign = async (driverName: string) => {
-    if (!assigningEmergency) return
+    if (!assigningEmergency || isAssigning) return
 
-    // Find the ambulance/driver card selected
-    const selectedAmb = ambulances.find((a) => a.driverName === driverName && (a.status as string) === TRIP_WORKFLOW_STATUS.available)
+    const emergencyId = assigningEmergency.id
+    const selectedAmb = ambulances.find((a) => a.driverName === driverName && isAmbulanceAvailable(a))
     if (!selectedAmb) return
- 
-    // Find the actual driver profile ID from database or mock ID
-    const { data: profiles } = await supabase
-      .from('profiles')
-      .select('id')
-      .eq('full_name', driverName)
-      .eq('role', 'driver')
-      .single()
- 
-    const driverId = profiles?.id || selectedAmb.id
- 
-    const pickupLoc = assigningEmergency.pickupLocation
-    const destHospital = assigningEmergency.destinationHospital
- 
-    // 1. Calculate route coordinates
-    const routeRes = await calculateSmartRoute({
-      source: [selectedAmb.lat, selectedAmb.lng],
-      destination: [assigningEmergency.destLat, assigningEmergency.destLng],
-      trafficLevel: 'medium',
-    })
- 
-    // 2. Insert into Supabase
-    const { data: insertedTrip, error: insertError } = await supabase
-      .from('ambulance_trips')
-      .insert({
-        driver_id: driverId,
-        ambulance_id: selectedAmb.id,
-        source: pickupLoc,
-        destination: destHospital,
-        source_lat: assigningEmergency.pickupLat,
-        source_lng: assigningEmergency.pickupLng,
-        dest_lat: assigningEmergency.destLat,
-        dest_lng: assigningEmergency.destLng,
-        current_lat: selectedAmb.lat,
-        current_lng: selectedAmb.lng,
-        status: 'pending',
-        eta: routeRes.estimatedTime,
-        distance: routeRes.totalDistance,
-        route_condition: 'clear',
-        route_data: {
-          ...routeRes,
-          status: TRIP_WORKFLOW_STATUS.assigned,
-          priority: assigningEmergency.priority,
-        },
+
+    setIsAssigning(true)
+    setAssignError(null)
+
+    try {
+      const { data: profile } = await supabase
+        .from('profiles')
+        .select('id')
+        .eq('full_name', driverName)
+        .eq('role', 'driver')
+        .maybeSingle()
+
+      if (!profile?.id) {
+        throw new Error('Selected driver is not a registered authenticated account.')
+      }
+
+      const isUuid = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(
+        emergencyId,
+      )
+      if (!isUuid) {
+        throw new Error('Invalid emergency record. Create a new emergency and try again.')
+      }
+
+      // Claim the emergency first so a second dispatch cannot race
+      const { data: claimed, error: claimError } = await supabase
+        .from('emergency_requests')
+        .update({
+          status: 'assigned',
+          updated_at: new Date().toISOString(),
+        })
+        .eq('id', emergencyId)
+        .eq('status', 'pending')
+        .is('assigned_trip_id', null)
+        .select('id')
+        .maybeSingle()
+
+      if (claimError) {
+        throw new Error(claimError.message)
+      }
+
+      if (!claimed) {
+        throw new Error('This emergency is already assigned to an ambulance.')
+      }
+
+      // Guard against an existing active trip for this emergency
+      const { data: existingTrip } = await supabase
+        .from('ambulance_trips')
+        .select('id, ambulance_id')
+        .eq('emergency_id', emergencyId)
+        .in('status', ['pending', 'in_progress'])
+        .maybeSingle()
+
+      if (existingTrip) {
+        await supabase
+          .from('emergency_requests')
+          .update({
+            status: 'assigned',
+            assigned_trip_id: existingTrip.id,
+            updated_at: new Date().toISOString(),
+          })
+          .eq('id', emergencyId)
+
+        throw new Error(`Already assigned to ${existingTrip.ambulance_id}.`)
+      }
+
+      const routeRes = await calculateSmartRoute({
+        source: [selectedAmb.lat, selectedAmb.lng],
+        destination: [assigningEmergency.destLat, assigningEmergency.destLng],
+        trafficLevel: 'medium',
       })
-      .select()
-      .single()
 
-    if (insertError) {
-      alert(`Supabase Insert Error: ${insertError.message}`)
-      return
+      const { data: insertedTrip, error: insertError } = await supabase
+        .from('ambulance_trips')
+        .insert({
+          driver_id: profile.id,
+          ambulance_id: selectedAmb.id,
+          emergency_id: emergencyId,
+          source: assigningEmergency.pickupLocation,
+          destination: assigningEmergency.destinationHospital,
+          source_lat: assigningEmergency.pickupLat,
+          source_lng: assigningEmergency.pickupLng,
+          dest_lat: assigningEmergency.destLat,
+          dest_lng: assigningEmergency.destLng,
+          current_lat: selectedAmb.lat,
+          current_lng: selectedAmb.lng,
+          status: 'pending',
+          eta: routeRes.estimatedTime,
+          distance: routeRes.totalDistance,
+          route_condition: 'clear',
+          route_data: {
+            ...routeRes,
+            status: TRIP_WORKFLOW_STATUS.assigned,
+            priority: assigningEmergency.priority,
+          },
+        })
+        .select()
+        .single()
+
+      if (insertError) {
+        // Release claim so dispatcher can retry if trip creation failed
+        await supabase
+          .from('emergency_requests')
+          .update({
+            status: 'pending',
+            assigned_trip_id: null,
+            updated_at: new Date().toISOString(),
+          })
+          .eq('id', emergencyId)
+          .eq('status', 'assigned')
+
+        const alreadyTaken =
+          insertError.code === '23505' ||
+          insertError.message.toLowerCase().includes('duplicate') ||
+          insertError.message.toLowerCase().includes('unique')
+
+        throw new Error(
+          alreadyTaken
+            ? 'This emergency was just assigned to another ambulance.'
+            : insertError.message,
+        )
+      }
+
+      await supabase
+        .from('emergency_requests')
+        .update({
+          status: 'assigned',
+          assigned_trip_id: insertedTrip?.id ?? null,
+          updated_at: new Date().toISOString(),
+        })
+        .eq('id', emergencyId)
+
+      // Optimistically remove from pending queue
+      setEmergencies((prev) =>
+        prev.map((emergency) =>
+          emergency.id === emergencyId
+            ? {
+                ...emergency,
+                status: 'assigned',
+                assignedAmbulanceId: selectedAmb.id,
+              }
+            : emergency,
+        ),
+      )
+
+      await broadcastTripNotification(supabase, {
+        event_type: 'dispatch_assigned',
+        driver_id: profile.id,
+        pickup: assigningEmergency.pickupLocation,
+        destination: assigningEmergency.destinationHospital,
+        priority: assigningEmergency.priority,
+        ambulanceId: selectedAmb.id,
+        eta: routeRes.estimatedTime,
+        trip_id: insertedTrip?.id,
+      })
+
+      setAssigningEmergency(null)
+      setAssignmentPreviewTrip(null)
+      await loadData()
+    } catch (error) {
+      setAssignError(error instanceof Error ? error.message : 'Unable to assign ambulance.')
+      await loadData()
+    } finally {
+      setIsAssigning(false)
     }
-
-    await broadcastTripNotification(supabase, {
-      event_type: 'dispatch_assigned',
-      driver_id: driverId,
-      pickup: pickupLoc,
-      destination: destHospital,
-      priority: assigningEmergency.priority,
-      ambulanceId: selectedAmb.id,
-      eta: routeRes.estimatedTime,
-      trip_id: insertedTrip?.id,
-    })
-
-    // Remove emergency from simulated local queue
-    setEmergencies((prev) => prev.filter((e) => e.id !== assigningEmergency.id))
-    setAssigningEmergency(null)
-    loadData()
   }
 
-  const handleCreateEmergency = async (event: FormEvent<HTMLFormElement>) => {
-    event.preventDefault()
-
-    if (!createForm.emergencyType.trim() || !createForm.pickupLocation.trim() || !createForm.destinationHospital.trim() || !createForm.patientName.trim()) {
-      setCreateError('Please complete the emergency type, patient name, pickup location, and destination hospital fields.')
-      return
-    }
-
+  const handleCreateEmergency = async () => {
     setIsCreatingEmergency(true)
     setCreateError(null)
 
-    const coordinates = getCoordinatesForRequest(createForm.pickupLocation, createForm.destinationHospital)
-    const newEmergency: EmergencyRequest = {
-      id: `REQ-${Date.now().toString().slice(-6)}`,
-      pickupLocation: createForm.pickupLocation.trim(),
-      pickupLat: coordinates.pickupLat,
-      pickupLng: coordinates.pickupLng,
-      destinationHospital: createForm.destinationHospital.trim(),
-      destLat: coordinates.destLat,
-      destLng: coordinates.destLng,
-      priority: createForm.priority,
-      timeAgo: 'Just now',
-      status: 'pending',
-      patientName: createForm.patientName.trim(),
-      notes: createForm.notes.trim(),
-      emergencyType: createForm.emergencyType.trim(),
-      createdAt: new Date().toISOString(),
-    }
-
-    const optimisticEmergencies = [newEmergency, ...emergencies]
-    setEmergencies(optimisticEmergencies)
-    persistEmergencies(optimisticEmergencies)
-
     try {
-      const { error } = await supabase.from('emergency_requests').insert({
-        pickup_location: newEmergency.pickupLocation,
-        pickup_lat: newEmergency.pickupLat,
-        pickup_lng: newEmergency.pickupLng,
-        destination_hospital: newEmergency.destinationHospital,
-        dest_lat: newEmergency.destLat,
-        dest_lng: newEmergency.destLng,
-        priority: newEmergency.priority,
-        status: newEmergency.status,
-        patient_name: newEmergency.patientName,
-        notes: newEmergency.notes,
-        emergency_type: newEmergency.emergencyType,
-        created_at: newEmergency.createdAt,
-      }).select('*').single()
+      const template = pickRandomEmergencyTemplate()
+      const createdAt = new Date()
+      const incidentId = generateIncidentId(createdAt)
+      const priority = normalizeTemplatePriority(template.priority)
+      const pickup = template.pickupLocation
+
+      let hospital = template.destinationHospital
+      if (!hospital) {
+        const nearest = await findNearestHospital(pickup.lat, pickup.lng)
+        if (!nearest) {
+          throw new Error('Unable to resolve a nearby hospital for this emergency.')
+        }
+        hospital = nearest
+      }
+
+      const route = await calculateSmartRoute({
+        source: [pickup.lat, pickup.lng],
+        destination: [hospital.lat, hospital.lng],
+        trafficLevel: priority === 'critical' ? 'high' : priority === 'high' ? 'medium' : 'low',
+      })
+
+      const {
+        data: { user },
+      } = await supabase.auth.getUser()
+
+      const { data: inserted, error } = await supabase
+        .from('emergency_requests')
+        .insert({
+          incident_id: incidentId,
+          pickup_location: pickup.name,
+          pickup_lat: pickup.lat,
+          pickup_lng: pickup.lng,
+          destination_hospital: hospital.name,
+          dest_lat: hospital.lat,
+          dest_lng: hospital.lng,
+          priority,
+          status: 'pending',
+          patient_name: template.patientName,
+          age: template.age,
+          emergency_type: template.emergencyType,
+          eta: route.estimatedTime,
+          distance: route.totalDistance,
+          notes: template.destinationHospital
+            ? null
+            : `Nearest hospital auto-selected near ${pickup.name}`,
+          created_by: user?.id ?? null,
+          created_at: createdAt.toISOString(),
+        })
+        .select('*')
+        .single()
 
       if (error) {
-        const isMissingTableError = error.code === '42P01' || error.message?.includes('does not exist') || error.message?.includes('relation')
-        if (!isMissingTableError) {
-          setCreateError(error.message)
-          setEmergencies(emergencies)
-          persistEmergencies(emergencies)
-          setIsCreatingEmergency(false)
-          return
-        }
+        throw new Error(
+          error.message.includes('does not exist') || error.code === '42P01'
+            ? 'emergency_requests table is missing. Apply the Supabase migrations first.'
+            : error.message.includes('incident_id') || error.message.includes('age') || error.message.includes('eta')
+              ? 'Apply supabase/migrations/20260725153000_emergency_template_fields.sql to add template columns.'
+              : error.message,
+        )
       }
-    } catch (error) {
-      setCreateError(error instanceof Error ? error.message : 'Unable to save emergency request right now.')
-      setEmergencies(emergencies)
-      persistEmergencies(emergencies)
-      setIsCreatingEmergency(false)
-      return
-    }
 
-    resetCreateForm()
-    setIsCreateModalOpen(false)
-    setIsCreatingEmergency(false)
-    await loadData()
+      if (inserted) {
+        setEmergencies((prev) => [
+          {
+            id: String(inserted.id),
+            incidentId: inserted.incident_id ?? incidentId,
+            pickupLocation: inserted.pickup_location,
+            pickupLat: Number(inserted.pickup_lat ?? pickup.lat),
+            pickupLng: Number(inserted.pickup_lng ?? pickup.lng),
+            destinationHospital: inserted.destination_hospital,
+            destLat: Number(inserted.dest_lat ?? hospital.lat),
+            destLng: Number(inserted.dest_lng ?? hospital.lng),
+            priority: (inserted.priority ?? priority) as EmergencyRequest['priority'],
+            timeAgo: 'Just now',
+            status: 'pending',
+            patientName: inserted.patient_name ?? template.patientName,
+            age: inserted.age ?? template.age,
+            emergencyType: inserted.emergency_type ?? template.emergencyType,
+            notes: inserted.notes ?? undefined,
+            createdAt: inserted.created_at ?? createdAt.toISOString(),
+            eta: inserted.eta ?? route.estimatedTime,
+            distance: inserted.distance ?? route.totalDistance,
+          },
+          ...prev,
+        ])
+      }
+
+      await loadData()
+    } catch (error) {
+      setCreateError(error instanceof Error ? error.message : 'Unable to create emergency right now.')
+    } finally {
+      setIsCreatingEmergency(false)
+    }
   }
 
+  const openAssignAmbulance = useCallback(async (emergency: EmergencyRequest) => {
+    if (emergency.status !== 'pending') return
+
+    setAssignError(null)
+    setAssigningEmergency(emergency)
+    setSelectedTrip(null)
+    setActiveSection('control-room')
+
+    const route = await calculateSmartRoute({
+      source: [emergency.pickupLat, emergency.pickupLng],
+      destination: [emergency.destLat, emergency.destLng],
+      trafficLevel: emergency.priority === 'critical' ? 'high' : 'medium',
+    })
+
+    setAssignmentPreviewTrip({
+      id: `assign-preview-${emergency.id}`,
+      ambulance_id: 'PENDING-ASSIGN',
+      driver_id: 'pending',
+      source: emergency.pickupLocation,
+      destination: emergency.destinationHospital,
+      source_lat: emergency.pickupLat,
+      source_lng: emergency.pickupLng,
+      dest_lat: emergency.destLat,
+      dest_lng: emergency.destLng,
+      current_lat: emergency.pickupLat,
+      current_lng: emergency.pickupLng,
+      eta: route.estimatedTime,
+      distance: route.totalDistance,
+      status: 'pending',
+      route_condition: 'clear',
+      route_data: {
+        ...route,
+        status: TRIP_WORKFLOW_STATUS.assigned,
+        priority: emergency.priority,
+      },
+      is_offline: false,
+      created_at: emergency.createdAt ?? new Date().toISOString(),
+      updated_at: new Date().toISOString(),
+    })
+  }, [])
+
+  const closeAssignAmbulance = useCallback(() => {
+    if (isAssigning) return
+    setAssigningEmergency(null)
+    setAssignmentPreviewTrip(null)
+    setAssignError(null)
+  }, [isAssigning])
+
+  // Shared source of truth for fleet panel + assignment modal
+  const availableAmbulances = useMemo(
+    () => ambulances.filter(isAmbulanceAvailable),
+    [ambulances],
+  )
+
+  const mapFocusedTrip = assignmentPreviewTrip ?? selectedTrip
+  const activeMapTrips = useMemo(
+    () => trips.filter((trip) => trip.status === 'pending' || trip.status === 'in_progress'),
+    [trips],
+  )
+
   // Count metrics
-  const availableCount = ambulances.filter((a) => (a.status as string) === TRIP_WORKFLOW_STATUS.available).length
-  const activeCount = ambulances.filter((a) => (a.status as string) !== TRIP_WORKFLOW_STATUS.available && (a.status as string) !== 'offline').length
+  const availableCount = availableAmbulances.length
+  const activeCount = ambulances.filter((a) => !isAmbulanceAvailable(a) && a.status !== 'offline').length
   const pendingCount = emergencies.filter((e) => e.status === 'pending').length
   const avgResponseTime = 8.2
 
@@ -537,25 +640,6 @@ export default function DispatchDashboard() {
           </div>
 
           <div className="relative z-10 space-y-6">
-            {/* Show authentication warning if dispatcher is not logged in */}
-            {!isAuthenticated && (
-              <div className="flex flex-col sm:flex-row items-center justify-between gap-4 p-4 rounded-xl border border-red-500/20 bg-red-500/5 backdrop-blur-md shadow-lg">
-                <div className="flex items-center gap-3 text-left">
-                  <ShieldAlert className="h-6 w-6 text-red-500 shrink-0" />
-                  <div>
-                    <h4 className="text-sm font-bold text-red-400">Database Operations Restricted</h4>
-                    <p className="text-xs text-muted-foreground">You are currently unauthenticated. Supabase Row-Level Security (RLS) restricts dispatching trips until signed in.</p>
-                  </div>
-                </div>
-                <Button asChild size="sm" className="bg-red-600 text-white font-semibold hover:bg-red-700">
-                  <Link href="/auth/login" className="flex items-center gap-1.5">
-                    <LogIn className="h-4 w-4" />
-                    Sign In
-                  </Link>
-                </Button>
-              </div>
-            )}
-
             {/* Render views conditionally based on sidebar selection */}
             {activeSection === 'control-room' && (
               <>
@@ -567,127 +651,189 @@ export default function DispatchDashboard() {
                   avgResponseTime={avgResponseTime}
                 />
 
-                {/* Layout Grid */}
                 <div className="grid gap-6 lg:grid-cols-[1fr_380px]">
-                  {/* Left Column: Live Map & Activity logs */}
                   <div className="space-y-6 flex flex-col">
                     <div className="glass-card flex flex-col rounded-2xl border border-white/10 bg-[#07111f]/60 overflow-hidden shadow-lg h-[460px]">
                       <div className="p-4 border-b border-white/10 flex items-center justify-between">
                         <h3 className="font-bold text-foreground tracking-wide flex items-center gap-2">
-                          Live Incident & Fleet Tracking Map
+                          Live Fleet Tracking Map
                         </h3>
-                        {selectedTrip && (
+                        {mapFocusedTrip && (
                           <button
-                            onClick={() => setSelectedTrip(null)}
+                            onClick={() => {
+                              setSelectedTrip(null)
+                              if (!assigningEmergency) setAssignmentPreviewTrip(null)
+                            }}
                             className="text-[10px] font-bold text-red-400 bg-red-500/10 border border-red-500/25 px-2 py-0.5 rounded-lg hover:bg-red-500/20"
                           >
-                            Reset Map Focus
+                            {assignmentPreviewTrip ? 'Clear Route Preview' : 'Reset Map Focus'}
                           </button>
                         )}
                       </div>
                       <div className="flex-1 relative">
                         <AmbulanceMap
                           trips={trips}
-                          selectedTrip={selectedTrip}
+                          selectedTrip={mapFocusedTrip}
+                          hospitals={HOSPITALS.map((hospital) => ({
+                            name: hospital.name,
+                            lat: hospital.lat,
+                            lng: hospital.lng,
+                          }))}
+                          showAllTrips
+                          onTripSelect={(trip) => {
+                            if (assigningEmergency) return
+                            if (trip.status === 'pending' || trip.status === 'in_progress') {
+                              setSelectedTrip(trip)
+                            }
+                          }}
                           className="h-full w-full absolute inset-0"
                         />
                       </div>
                     </div>
 
-                    <DispatchActivityTimeline logs={logs} />
-                  </div>
-
-                  {/* Right Column: Queue & Fleet */}
-                  <div className="space-y-6">
-                    <div className="space-y-3">
-                      <div className="flex items-center justify-between">
-                        <div>
-                          <h3 className="text-sm font-semibold text-foreground">Emergency Intake</h3>
-                          <p className="text-xs text-muted-foreground">Log a new request and push it into the active dispatch queue.</p>
+                    <div className="grid gap-4 md:grid-cols-2">
+                      <div className="glass-card rounded-2xl border border-white/10 bg-[#07111f]/60 p-4 shadow-lg">
+                        <div className="mb-3 flex items-center justify-between">
+                          <h3 className="text-sm font-bold text-foreground">Active Trips Summary</h3>
+                          <span className="rounded border border-blue-500/20 bg-blue-500/10 px-2 py-0.5 text-[10px] font-bold text-blue-300">
+                            {activeCount} LIVE
+                          </span>
                         </div>
-                        <Button
-                          onClick={() => {
-                            resetCreateForm()
-                            setCreateError(null)
-                            setIsCreateModalOpen(true)
-                          }}
-                          size="sm"
-                          className="rounded-lg bg-red-600 text-white hover:bg-red-700"
-                        >
-                          <Plus className="mr-1.5 h-4 w-4" />
-                          Create Emergency
-                        </Button>
+                        <div className="space-y-2">
+                          {activeMapTrips.slice(0, 4).map((trip) => (
+                            <button
+                              key={trip.id}
+                              onClick={() => {
+                                setAssignmentPreviewTrip(null)
+                                setSelectedTrip(trip)
+                              }}
+                              className="flex w-full items-center justify-between rounded-xl border border-white/5 bg-white/[0.02] p-3 text-left transition-colors hover:border-blue-500/25 hover:bg-blue-500/5"
+                            >
+                              <div>
+                                <div className="font-mono text-xs font-bold text-slate-200">{trip.ambulance_id}</div>
+                                <div className="mt-0.5 max-w-[220px] truncate text-[10px] text-muted-foreground">
+                                  {trip.source} to {trip.destination || 'destination pending'}
+                                </div>
+                              </div>
+                              <span className="text-[10px] font-bold uppercase text-slate-400">{trip.status}</span>
+                            </button>
+                          ))}
+                          {activeMapTrips.length === 0 && (
+                            <div className="py-6 text-center text-xs text-muted-foreground">No active trips on the board.</div>
+                          )}
+                        </div>
                       </div>
 
-                      <DispatchEmergencyQueue
-                        emergencies={emergencies}
-                        onAssignAmbulance={(req) => setAssigningEmergency(req)}
-                      />
+                      <div className="glass-card rounded-2xl border border-white/10 bg-[#07111f]/60 p-4 shadow-lg">
+                        <div className="mb-3 flex items-center justify-between">
+                          <h3 className="text-sm font-bold text-foreground">Current Emergency Overview</h3>
+                          <span className="rounded border border-red-500/20 bg-red-500/10 px-2 py-0.5 text-[10px] font-bold text-red-300">
+                            {pendingCount} PENDING
+                          </span>
+                        </div>
+                        <div className="space-y-2">
+                          {emergencies.filter((emergency) => emergency.status === 'pending').slice(0, 4).map((emergency) => (
+                            <div key={emergency.id} className="rounded-xl border border-white/5 bg-white/[0.02] p-3">
+                              <div className="flex items-center justify-between gap-2">
+                                <span className="font-mono text-xs font-bold text-slate-200">REQ-{emergency.id}</span>
+                                <span className="rounded border border-red-500/20 bg-red-500/10 px-2 py-0.5 text-[10px] font-bold uppercase text-red-300">
+                                  {emergency.priority}
+                                </span>
+                              </div>
+                              <div className="mt-1 truncate text-[10px] text-muted-foreground">
+                                {emergency.pickupLocation} to {emergency.destinationHospital}
+                              </div>
+                            </div>
+                          ))}
+                          {pendingCount === 0 && (
+                            <div className="py-6 text-center text-xs text-muted-foreground">No pending emergency requests.</div>
+                          )}
+                        </div>
+                      </div>
+                    </div>
+                  </div>
+
+                  <div className="space-y-6">
+                    <div className="glass-card rounded-2xl border border-white/10 bg-[#07111f]/60 p-4 shadow-lg">
+                      <div className="mb-3 flex items-center justify-between">
+                        <h3 className="text-sm font-bold text-foreground">Live Ambulance Monitoring</h3>
+                        <span className="text-[10px] font-bold uppercase tracking-wider text-emerald-400">Online</span>
+                      </div>
+                      <div className="space-y-2">
+                        {ambulances.slice(0, 6).map((amb) => (
+                          <button
+                            key={amb.id}
+                            onClick={() => {
+                              const matchTrip = trips.find((trip) => trip.ambulance_id === amb.id)
+                              if (matchTrip) setSelectedTrip(matchTrip)
+                            }}
+                            className="flex w-full items-center justify-between rounded-xl border border-white/5 bg-white/[0.02] p-3 text-left transition-colors hover:bg-white/[0.04]"
+                          >
+                            <div>
+                              <div className="font-mono text-xs font-bold text-slate-200">{amb.id}</div>
+                              <div className="mt-0.5 text-[10px] text-muted-foreground">{amb.driverName} • {amb.locationName}</div>
+                            </div>
+                            <span className="text-[10px] font-bold uppercase text-slate-400">{amb.status}</span>
+                          </button>
+                        ))}
+                      </div>
                     </div>
 
-                    <DispatchAmbulanceList
-                      ambulances={ambulances}
-                      selectedAmbulanceId={selectedTrip?.ambulance_id}
-                      onSelectAmbulance={(amb) => {
-                        const matchTrip = trips.find((t) => t.ambulance_id === amb.id)
-                        if (matchTrip) {
-                          setSelectedTrip(matchTrip)
-                        }
-                      }}
-                    />
+                    <DispatchActivityTimeline logs={logs} />
                   </div>
                 </div>
               </>
             )}
 
-            {activeSection === 'radio' && (
-              <div className="glass-card rounded-2xl border border-white/10 bg-[#07111f]/60 p-6 space-y-6 shadow-lg max-w-4xl">
-                <div>
-                  <h2 className="text-xl font-bold text-foreground tracking-wide">Radio Frequency Control</h2>
-                  <p className="text-xs text-muted-foreground mt-1">Monitor active emergency radio streams and dispatch channels.</p>
-                </div>
-                
-                <div className="grid gap-6 md:grid-cols-2">
-                  <div className="space-y-4">
-                    <h3 className="text-sm font-bold text-slate-300">Active Broadcasters</h3>
-                    <div className="space-y-2">
-                      {[
-                        { name: 'Channel Alpha - Primary Dispatch', freq: '154.280 MHz', active: true },
-                        { name: 'Channel Beta - EMS Medical Traffic', freq: '155.340 MHz', active: true },
-                        { name: 'Channel Gamma - Police Link', freq: '155.475 MHz', active: false },
-                      ].map((ch, idx) => (
-                        <div key={idx} className="flex items-center justify-between p-3.5 bg-white/[0.02] border border-white/5 rounded-xl">
-                          <div>
-                            <div className="text-xs font-bold text-foreground">{ch.name}</div>
-                            <div className="text-[10px] text-muted-foreground font-mono mt-0.5">{ch.freq}</div>
-                          </div>
-                          <span className={`text-[10px] font-bold px-2 py-0.5 rounded border ${
-                            ch.active ? 'bg-emerald-500/10 text-emerald-400 border-emerald-500/20' : 'bg-white/5 text-muted-foreground border-white/10'
-                          }`}>
-                            {ch.active ? 'LIVE LINK' : 'STANDBY'}
-                          </span>
-                        </div>
-                      ))}
+            {activeSection === 'dispatch-queue' && (
+              <div className="grid gap-6 lg:grid-cols-[1fr_380px]">
+                <div className="space-y-6">
+                  <div className="glass-card rounded-2xl border border-white/10 bg-[#07111f]/60 p-4 shadow-lg">
+                    <div className="flex items-center justify-between gap-4">
+                      <div>
+                        <h2 className="text-xl font-bold text-foreground tracking-wide">Dispatch Queue</h2>
+                        <p className="text-xs text-muted-foreground mt-1">
+                          One click creates a random emergency from templates, resolves hospital, and calculates route ETA.
+                        </p>
+                      </div>
+                      <Button
+                        onClick={handleCreateEmergency}
+                        size="sm"
+                        disabled={isCreatingEmergency}
+                        className="rounded-lg bg-red-600 text-white hover:bg-red-700"
+                      >
+                        {isCreatingEmergency ? (
+                          <Loader2 className="mr-1.5 h-4 w-4 animate-spin" />
+                        ) : (
+                          <Plus className="mr-1.5 h-4 w-4" />
+                        )}
+                        {isCreatingEmergency ? 'Creating…' : 'Create Emergency'}
+                      </Button>
                     </div>
+                    {createError && (
+                      <p className="mt-3 flex items-center gap-2 text-xs text-red-400">
+                        <AlertCircle className="h-3.5 w-3.5 shrink-0" />
+                        {createError}
+                      </p>
+                    )}
                   </div>
 
-                  <div className="flex flex-col justify-between p-4 bg-black/30 border border-white/10 rounded-2xl h-52">
-                    <div className="text-xs font-bold text-muted-foreground uppercase tracking-wider">Frequency Visualizer</div>
-                    <div className="flex items-end justify-center gap-1.5 h-28 pb-2">
-                      {[30, 60, 45, 80, 95, 40, 65, 85, 30, 50, 75, 90, 45, 60].map((h, i) => (
-                        <motion.div
-                          key={i}
-                          animate={{ height: [`${h * 0.4}%`, `${h}%`, `${h * 0.4}%`] }}
-                          transition={{ duration: 1.2, repeat: Infinity, delay: i * 0.08, ease: 'easeInOut' }}
-                          className="w-2 rounded-t bg-emerald-500/60"
-                        />
-                      ))}
-                    </div>
-                    <div className="text-center font-mono text-xs text-emerald-400 font-bold tracking-widest animate-pulse">
-                      SECURE AES-256 CHANNEL ACTIVE
-                    </div>
-                  </div>
+                  <DispatchEmergencyQueue
+                    emergencies={emergencies}
+                    onAssignAmbulance={openAssignAmbulance}
+                  />
                 </div>
+
+                <DispatchAmbulanceList
+                  ambulances={ambulances}
+                  selectedAmbulanceId={selectedTrip?.ambulance_id}
+                  onSelectAmbulance={(amb) => {
+                    const matchTrip = trips.find((t) => t.ambulance_id === amb.id)
+                    if (matchTrip) {
+                      setSelectedTrip(matchTrip)
+                    }
+                  }}
+                />
               </div>
             )}
 
@@ -756,12 +902,20 @@ export default function DispatchDashboard() {
                   <div className="flex items-center justify-between p-4 bg-white/[0.02] border border-white/5 rounded-xl">
                     <div>
                       <div className="text-xs font-bold text-foreground">GPS Refresh Interval</div>
-                      <div className="text-[10px] text-muted-foreground mt-0.5">Adjust device tracking refresh intervals.</div>
+                      <div className="text-[10px] text-muted-foreground mt-0.5">
+                        Current interval: {formatGpsRefreshInterval(gpsRefreshInterval)}
+                      </div>
                     </div>
-                    <select className="bg-black/30 border border-white/10 text-foreground text-xs rounded-lg p-1.5 outline-none">
-                      <option>1 Second (Realtime)</option>
-                      <option>5 Seconds</option>
-                      <option>15 Seconds</option>
+                    <select
+                      value={gpsRefreshInterval}
+                      onChange={(event) => setGpsRefreshInterval(Number(event.target.value) as GpsRefreshInterval)}
+                      className="bg-black/30 border border-white/10 text-foreground text-xs rounded-lg p-1.5 outline-none"
+                    >
+                      {GPS_REFRESH_INTERVALS.map((interval) => (
+                        <option key={interval} value={interval}>
+                          {formatGpsRefreshInterval(interval)}
+                        </option>
+                      ))}
                     </select>
                   </div>
                 </div>
@@ -771,140 +925,21 @@ export default function DispatchDashboard() {
         </main>
       </div>
 
-      {/* Emergency Creation Modal */}
-      <AnimatePresence>
-        {isCreateModalOpen && (
-          <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/75 backdrop-blur-sm">
-            <motion.div
-              initial={{ scale: 0.95, opacity: 0 }}
-              animate={{ scale: 1, opacity: 1 }}
-              exit={{ scale: 0.95, opacity: 0 }}
-              className="w-full max-w-xl bg-[#07111f] border border-white/15 rounded-2xl shadow-2xl p-6 text-foreground space-y-4"
-            >
-              <div className="flex items-start justify-between gap-3">
-                <div>
-                  <h3 className="text-base font-bold text-foreground">Create New Emergency</h3>
-                  <p className="text-xs text-muted-foreground mt-1">Capture the request details so dispatch can assign the nearest unit quickly.</p>
-                </div>
-                <button
-                  onClick={() => {
-                    setIsCreateModalOpen(false)
-                    setCreateError(null)
-                  }}
-                  className="rounded-lg border border-white/10 bg-white/5 p-1 text-muted-foreground hover:bg-white/10 hover:text-foreground transition-colors"
-                >
-                  <X className="h-4 w-4" />
-                </button>
-              </div>
-
-              <form className="space-y-4" onSubmit={handleCreateEmergency}>
-                <div className="grid gap-4 md:grid-cols-2">
-                  <div className="space-y-2">
-                    <label className="text-xs font-semibold uppercase tracking-wider text-muted-foreground">Emergency Type</label>
-                    <Input
-                      required
-                      value={createForm.emergencyType}
-                      onChange={(event) => setCreateForm((prev) => ({ ...prev, emergencyType: event.target.value }))}
-                      placeholder="Trauma, Cardiac, etc."
-                    />
-                  </div>
-
-                  <div className="space-y-2">
-                    <label className="text-xs font-semibold uppercase tracking-wider text-muted-foreground">Patient Name</label>
-                    <Input
-                      required
-                      value={createForm.patientName}
-                      onChange={(event) => setCreateForm((prev) => ({ ...prev, patientName: event.target.value }))}
-                      placeholder="Patient name"
-                    />
-                  </div>
-                </div>
-
-                <div className="grid gap-4 md:grid-cols-2">
-                  <div className="space-y-2">
-                    <label className="text-xs font-semibold uppercase tracking-wider text-muted-foreground">Pickup Location</label>
-                    <Input
-                      required
-                      value={createForm.pickupLocation}
-                      onChange={(event) => setCreateForm((prev) => ({ ...prev, pickupLocation: event.target.value }))}
-                      placeholder="BTM Layout"
-                    />
-                  </div>
-
-                  <div className="space-y-2">
-                    <label className="text-xs font-semibold uppercase tracking-wider text-muted-foreground">Destination Hospital</label>
-                    <Input
-                      required
-                      value={createForm.destinationHospital}
-                      onChange={(event) => setCreateForm((prev) => ({ ...prev, destinationHospital: event.target.value }))}
-                      placeholder="Apollo Hospital"
-                    />
-                  </div>
-                </div>
-
-                <div className="grid gap-4 md:grid-cols-2">
-                  <div className="space-y-2">
-                    <label className="text-xs font-semibold uppercase tracking-wider text-muted-foreground">Priority</label>
-                    <select
-                      value={createForm.priority}
-                      onChange={(event) => setCreateForm((prev) => ({ ...prev, priority: event.target.value as EmergencyRequest['priority'] }))}
-                      className="h-9 w-full rounded-md border border-input bg-transparent px-3 py-1 text-sm text-foreground outline-none"
-                    >
-                      <option value="critical">Critical</option>
-                      <option value="high">High</option>
-                      <option value="medium">Medium</option>
-                      <option value="low">Low</option>
-                    </select>
-                  </div>
-
-                  <div className="space-y-2">
-                    <label className="text-xs font-semibold uppercase tracking-wider text-muted-foreground">Notes</label>
-                    <Textarea
-                      value={createForm.notes}
-                      onChange={(event) => setCreateForm((prev) => ({ ...prev, notes: event.target.value }))}
-                      placeholder="Add any operational context"
-                      className="min-h-9"
-                    />
-                  </div>
-                </div>
-
-                {createError && (
-                  <div className="rounded-lg border border-red-500/30 bg-red-500/10 p-3 text-xs text-red-300">
-                    {createError}
-                  </div>
-                )}
-
-                <div className="flex justify-end gap-2 border-t border-white/10 pt-4">
-                  <Button
-                    type="button"
-                    variant="ghost"
-                    className="h-8 rounded-lg text-xs font-semibold hover:bg-white/5 text-muted-foreground hover:text-foreground"
-                    onClick={() => {
-                      setIsCreateModalOpen(false)
-                      setCreateError(null)
-                    }}
-                  >
-                    Cancel
-                  </Button>
-                  <Button type="submit" className="h-8 rounded-lg bg-red-600 text-white hover:bg-red-700" disabled={isCreatingEmergency}>
-                    {isCreatingEmergency ? 'Creating…' : 'Save Emergency'}
-                  </Button>
-                </div>
-              </form>
-            </motion.div>
-          </div>
-        )}
-      </AnimatePresence>
-
-      {/* Assignment Modal Pop-up */}
+      {/* Assignment side panel — keeps the live map visible with dotted route */}
       <AnimatePresence>
         {assigningEmergency && (
-          <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/75 backdrop-blur-sm">
+          <div className="fixed inset-0 z-50 flex justify-end pointer-events-none">
+            <button
+              type="button"
+              aria-label="Close assignment panel"
+              className="absolute inset-0 bg-black/35 pointer-events-auto"
+              onClick={closeAssignAmbulance}
+            />
             <motion.div
-              initial={{ scale: 0.95, opacity: 0 }}
-              animate={{ scale: 1, opacity: 1 }}
-              exit={{ scale: 0.95, opacity: 0 }}
-              className="w-full max-w-md bg-[#07111f] border border-white/15 rounded-2xl shadow-2xl p-6 text-foreground space-y-4"
+              initial={{ x: 24, opacity: 0 }}
+              animate={{ x: 0, opacity: 1 }}
+              exit={{ x: 24, opacity: 0 }}
+              className="relative z-10 m-3 flex h-[calc(100%-1.5rem)] w-full max-w-md flex-col overflow-hidden rounded-2xl border border-white/15 bg-[#07111f] p-6 text-foreground shadow-2xl pointer-events-auto"
             >
               <div className="flex items-center justify-between">
                 <h3 className="text-base font-bold text-foreground flex items-center gap-2">
@@ -912,7 +947,7 @@ export default function DispatchDashboard() {
                   Assign Dispatch Unit
                 </h3>
                 <button
-                  onClick={() => setAssigningEmergency(null)}
+                  onClick={closeAssignAmbulance}
                   className="rounded-lg border border-white/10 bg-white/5 p-1 text-muted-foreground hover:bg-white/10 hover:text-foreground transition-colors"
                 >
                   <X className="h-4 w-4" />
@@ -921,7 +956,7 @@ export default function DispatchDashboard() {
 
               <div className="p-3 bg-white/5 border border-white/10 rounded-xl space-y-1.5 text-xs text-muted-foreground">
                 <div>
-                  <span className="font-bold text-slate-300">Incident Code:</span> REQ-{assigningEmergency.id} ({assigningEmergency.priority.toUpperCase()})
+                  <span className="font-bold text-slate-300">Incident Code:</span> {assigningEmergency.incidentId ?? assigningEmergency.id} ({assigningEmergency.priority.toUpperCase()})
                 </div>
                 <div>
                   <span className="font-bold text-slate-300">Pickup Location:</span> {assigningEmergency.pickupLocation}
@@ -933,23 +968,34 @@ export default function DispatchDashboard() {
 
               <div className="space-y-2">
                 <h4 className="text-xs font-bold text-muted-foreground uppercase tracking-wider">Available Fleet Units</h4>
+                {assignError && (
+                  <p className="rounded-lg border border-red-500/30 bg-red-500/10 px-3 py-2 text-xs text-red-300">
+                    {assignError}
+                  </p>
+                )}
                 <div className="max-h-48 overflow-y-auto space-y-2 pr-1">
-                  {ambulances.filter((a) => a.status === 'available').map((amb) => (
+                  {availableAmbulances.map((amb) => (
                     <div
                       key={amb.id}
-                      onClick={() => handleAssign(amb.driverName)}
-                      className="flex items-center justify-between p-2.5 bg-white/[0.02] border border-white/5 rounded-lg hover:bg-emerald-500/10 hover:border-emerald-500/30 cursor-pointer transition-all duration-150"
+                      onClick={() => {
+                        if (!isAssigning) handleAssign(amb.driverName)
+                      }}
+                      className={`flex items-center justify-between p-2.5 bg-white/[0.02] border border-white/5 rounded-lg transition-all duration-150 ${
+                        isAssigning
+                          ? 'cursor-not-allowed opacity-60'
+                          : 'hover:bg-emerald-500/10 hover:border-emerald-500/30 cursor-pointer'
+                      }`}
                     >
                       <div>
                         <div className="font-mono text-xs font-bold text-foreground">{amb.id}</div>
                         <div className="text-[10px] text-muted-foreground">{amb.driverName} • {amb.locationName}</div>
                       </div>
                       <span className="text-[10px] font-bold text-emerald-400 bg-emerald-500/10 border border-emerald-500/20 px-2 py-0.5 rounded">
-                        Dispatch
+                        {isAssigning ? 'Assigning…' : 'Dispatch'}
                       </span>
                     </div>
                   ))}
-                  {ambulances.filter((a) => a.status === 'available').length === 0 && (
+                  {availableAmbulances.length === 0 && (
                     <div className="py-6 text-center text-xs text-muted-foreground">
                       No units available in this shift.
                     </div>
@@ -959,8 +1005,9 @@ export default function DispatchDashboard() {
 
               <div className="flex justify-end pt-2 border-t border-white/5">
                 <Button
-                  onClick={() => setAssigningEmergency(null)}
+                  onClick={closeAssignAmbulance}
                   variant="ghost"
+                  disabled={isAssigning}
                   className="h-8 rounded-lg text-xs font-semibold hover:bg-white/5 text-muted-foreground hover:text-foreground"
                 >
                   Cancel

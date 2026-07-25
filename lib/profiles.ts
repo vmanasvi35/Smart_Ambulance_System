@@ -9,11 +9,13 @@ function getExplicitUserRole(user: User): UserRole | null {
   const appMetadataRole = user.app_metadata?.role
   if (appMetadataRole === 'police') return 'police'
   if (appMetadataRole === 'driver') return 'driver'
-  
+  if (appMetadataRole === 'dispatcher') return 'dispatcher'
+
   const userMetadataRole = user.user_metadata?.role
   if (userMetadataRole === 'police') return 'police'
   if (userMetadataRole === 'driver') return 'driver'
-  
+  if (userMetadataRole === 'dispatcher') return 'dispatcher'
+
   return null
 }
 
@@ -32,7 +34,9 @@ function getFullName(user: User) {
 }
 
 export function getDashboardPath(role: UserRole) {
-  return role === 'police' ? '/police/dashboard' : '/driver/dashboard'
+  if (role === 'police') return '/police/dashboard'
+  if (role === 'dispatcher') return '/dispatch'
+  return '/driver/dashboard'
 }
 
 export async function ensureUserProfile(
@@ -78,6 +82,7 @@ export async function ensureUserProfile(
         full_name: getFullName(user),
         email: user.email ?? '',
         role: getUserRole(user),
+        updated_at: new Date().toISOString(),
         // Driver-specific fields
         age: user.user_metadata?.age,
         hospital: user.user_metadata?.hospital,

@@ -6,13 +6,13 @@ import { ScrollReveal } from '@/components/landing/scroll-reveal'
 
 const FOOTER_LINKS = [
   {
-    href: 'https://github.com',
+    href: 'https://github.com/vmanasvi35/Smart_Ambulance_System',
     label: 'GitHub Repository',
     icon: Github,
     external: true,
   },
   {
-    href: 'mailto:contact@example.com',
+    href: 'vmanasvi35@gmail.com',
     label: 'Contact Email',
     icon: Mail,
     external: true,

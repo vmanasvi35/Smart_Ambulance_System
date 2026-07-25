@@ -1,4 +1,4 @@
-export type UserRole = 'driver' | 'police'
+export type UserRole = 'driver' | 'police' | 'dispatcher'
 
 export type TripStatus = 'pending' | 'in_progress' | 'completed' | 'cancelled'
 
@@ -30,6 +30,7 @@ export interface Profile {
   email: string
   role: UserRole
   created_at: string
+  updated_at?: string
   // Driver-specific fields
   age?: number
   hospital?: string
@@ -41,10 +42,58 @@ export interface Profile {
   badge_number?: string
 }
 
+export interface EmergencyRequestRow {
+  id: string
+  incident_id?: string | null
+  pickup_location: string
+  pickup_lat: number | null
+  pickup_lng: number | null
+  destination_hospital: string
+  dest_lat: number | null
+  dest_lng: number | null
+  priority: 'critical' | 'high' | 'medium' | 'low'
+  status: 'pending' | 'assigned' | 'cancelled' | 'completed'
+  patient_name: string | null
+  age?: number | null
+  notes: string | null
+  emergency_type: string | null
+  eta?: number | null
+  distance?: number | null
+  assigned_trip_id: string | null
+  created_by: string | null
+  created_at: string
+  updated_at: string
+}
+
+export interface ActivityLogRow {
+  id: string
+  event_type: string
+  message: string
+  actor_id: string | null
+  trip_id: string | null
+  emergency_id: string | null
+  ambulance_id: string | null
+  metadata: Record<string, unknown>
+  created_at: string
+}
+
+export interface NotificationRow {
+  id: string
+  recipient_id: string | null
+  trip_id: string | null
+  event_type: string
+  title: string | null
+  message: string | null
+  payload: Record<string, unknown>
+  is_read: boolean
+  created_at: string
+}
+
 export interface AmbulanceTrip {
   id: string
   driver_id: string
   ambulance_id: string
+  emergency_id?: string | null
   source: string
   destination: string
   source_lat: number | null

@@ -1,13 +1,14 @@
 'use client'
 
 import { useState } from 'react'
-import { Search, User, MapPin, Clock, BadgeCheck, Eye } from 'lucide-react'
+import { Search, User, MapPin, Clock } from 'lucide-react'
 import { Input as CustomInput } from '@/components/ui/input'
 import { Badge } from '@/components/ui/badge'
 import { cn } from '@/lib/utils'
 import { TRIP_WORKFLOW_STATUS } from '@/lib/trip-status'
+import type { TripWorkflowStatus } from '@/lib/types'
 
-export type AmbulanceStatus = 'available' | 'assigned' | 'accepted' | 'going_to_pickup' | 'patient_onboard' | 'en_route_hospital' | 'completed' | 'offline'
+export type AmbulanceStatus = TripWorkflowStatus | 'offline'
 
 export interface Ambulance {
   id: string
@@ -18,6 +19,10 @@ export interface Ambulance {
   lng: number
   eta?: number // in minutes
   clearanceStatus?: 'pending' | 'clearing' | 'cleared'
+}
+
+export function isAmbulanceAvailable(ambulance: Pick<Ambulance, 'status'>) {
+  return ambulance.status === TRIP_WORKFLOW_STATUS.available
 }
 
 interface DispatchAmbulanceListProps {
@@ -40,38 +45,41 @@ export function DispatchAmbulanceList({
       amb.locationName.toLowerCase().includes(search.toLowerCase())
   )
 
-  const statusConfig = {
-    available: {
+  const statusConfig: Record<
+    string,
+    { label: string; badgeClass: string; dotClass: string }
+  > = {
+    [TRIP_WORKFLOW_STATUS.available]: {
       label: TRIP_WORKFLOW_STATUS.available,
       badgeClass: 'bg-emerald-500/10 text-emerald-400 border-emerald-500/30 shadow-[0_0_12px_rgba(16,185,129,0.15)]',
       dotClass: 'bg-emerald-500 shadow-[0_0_8px_rgba(16,185,129,0.8)]',
     },
-    assigned: {
+    [TRIP_WORKFLOW_STATUS.assigned]: {
       label: TRIP_WORKFLOW_STATUS.assigned,
       badgeClass: 'bg-blue-500/10 text-blue-400 border-blue-500/30 shadow-[0_0_12px_rgba(59,130,246,0.15)]',
       dotClass: 'bg-blue-500 shadow-[0_0_8px_rgba(59,130,246,0.8)]',
     },
-    accepted: {
+    [TRIP_WORKFLOW_STATUS.accepted]: {
       label: TRIP_WORKFLOW_STATUS.accepted,
       badgeClass: 'bg-indigo-500/10 text-indigo-400 border-indigo-500/30 shadow-[0_0_12px_rgba(99,102,241,0.15)]',
       dotClass: 'bg-indigo-500 shadow-[0_0_8px_rgba(99,102,241,0.8)]',
     },
-    going_to_pickup: {
+    [TRIP_WORKFLOW_STATUS.goingToPickup]: {
       label: TRIP_WORKFLOW_STATUS.goingToPickup,
       badgeClass: 'bg-purple-500/10 text-purple-400 border-purple-500/30 shadow-[0_0_12px_rgba(168,85,247,0.15)]',
       dotClass: 'bg-purple-500 shadow-[0_0_8px_rgba(168,85,247,0.8)]',
     },
-    patient_onboard: {
+    [TRIP_WORKFLOW_STATUS.patientOnboard]: {
       label: TRIP_WORKFLOW_STATUS.patientOnboard,
       badgeClass: 'bg-amber-500/10 text-amber-400 border-amber-500/30 shadow-[0_0_12px_rgba(245,158,11,0.15)]',
       dotClass: 'bg-amber-500 shadow-[0_0_8px_rgba(245,158,11,0.8)]',
     },
-    en_route_hospital: {
+    [TRIP_WORKFLOW_STATUS.enRouteHospital]: {
       label: TRIP_WORKFLOW_STATUS.enRouteHospital,
       badgeClass: 'bg-orange-500/10 text-orange-400 border-orange-500/30 shadow-[0_0_12px_rgba(249,115,22,0.15)]',
       dotClass: 'bg-orange-500 shadow-[0_0_8px_rgba(249,115,22,0.8)]',
     },
-    completed: {
+    [TRIP_WORKFLOW_STATUS.completed]: {
       label: TRIP_WORKFLOW_STATUS.completed,
       badgeClass: 'bg-green-500/10 text-green-400 border-green-500/30 shadow-[0_0_12px_rgba(16,185,129,0.15)]',
       dotClass: 'bg-green-500 shadow-[0_0_8px_rgba(16,185,129,0.8)]',
@@ -106,7 +114,7 @@ export function DispatchAmbulanceList({
       <div className="flex-1 overflow-y-auto max-h-[460px] p-2 space-y-2 scrollbar-thin">
         {filteredAmbulances.length > 0 ? (
           filteredAmbulances.map((amb) => {
-            const config = statusConfig[amb.status] ?? statusConfig.available
+            const config = statusConfig[amb.status] ?? statusConfig[TRIP_WORKFLOW_STATUS.available]
             const isSelected = selectedAmbulanceId === amb.id
 
             return (
@@ -143,7 +151,7 @@ export function DispatchAmbulanceList({
 
                   <div className="flex items-center gap-1 font-mono text-[10px] text-amber-400 font-bold bg-amber-500/5 border border-amber-500/10 px-1.5 py-0.5 rounded">
                     <Clock className="h-3 w-3 shrink-0 text-amber-500" />
-                    <span>{amb.status === 'available' ? 'Immediate' : `${amb.eta ?? 5}m ETA`}</span>
+                    <span>{isAmbulanceAvailable(amb) ? 'Immediate' : `${amb.eta ?? 5}m ETA`}</span>
                   </div>
                 </div>
                 {amb.clearanceStatus && (

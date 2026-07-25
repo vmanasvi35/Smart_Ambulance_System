@@ -10,7 +10,7 @@ import { Label } from '@/components/ui/label'
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card'
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
 import { AuthShell } from '@/components/auth/auth-shell'
-import { Ambulance, Loader2, Shield, Truck } from 'lucide-react'
+import { Ambulance, Loader2, Radio, Shield, Truck } from 'lucide-react'
 import type { UserRole } from '@/lib/types'
 
 export default function SignUpPage() {
@@ -135,7 +135,9 @@ export default function SignUpPage() {
         <Card className="glass-card border-white/10 shadow-xl shadow-black/25">
           <CardHeader>
             <CardTitle className="text-xl">Create Account</CardTitle>
-            <CardDescription>Sign up as a driver or police coordinator</CardDescription>
+            <CardDescription>
+              Sign up as a driver, police coordinator, or dispatcher
+            </CardDescription>
           </CardHeader>
           <CardContent>
             <form onSubmit={handleSignUp} className="space-y-4">
@@ -202,6 +204,12 @@ export default function SignUpPage() {
                       <div className="flex items-center gap-2">
                         <Shield className="h-4 w-4" />
                         <span>Police Coordinator</span>
+                      </div>
+                    </SelectItem>
+                    <SelectItem value="dispatcher">
+                      <div className="flex items-center gap-2">
+                        <Radio className="h-4 w-4" />
+                        <span>Dispatcher</span>
                       </div>
                     </SelectItem>
                   </SelectContent>

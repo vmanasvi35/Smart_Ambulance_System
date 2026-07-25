@@ -211,14 +211,6 @@ export function LandingNavbar() {
             variant="ghost"
             className="hidden text-muted-foreground hover:bg-white/5 hover:text-foreground sm:inline-flex"
           >
-            <Link href="/dispatch">Dispatch Center</Link>
-          </Button>
-          <Button
-            asChild
-            size="sm"
-            variant="ghost"
-            className="hidden text-muted-foreground hover:bg-white/5 hover:text-foreground sm:inline-flex"
-          >
             <Link href="/auth/login">Login</Link>
           </Button>
           <Button
@@ -273,6 +265,13 @@ export function LandingNavbar() {
                 onClick={() => setOpen(false)}
               >
                 Login
+              </Link>
+              <Link
+                href="/auth/signup"
+                className="block rounded-md px-3 py-2.5 text-sm text-muted-foreground hover:bg-white/5"
+                onClick={() => setOpen(false)}
+              >
+                Sign Up
               </Link>
             </li>
           </ul>

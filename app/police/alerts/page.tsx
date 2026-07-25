@@ -1,10 +1,9 @@
 'use client'
 
-import { useEffect, useState } from 'react'
+import { useEffect, useMemo, useState } from 'react'
 import { createClient } from '@/lib/supabase/client'
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card'
 import { Button } from '@/components/ui/button'
-import { StatusBadge } from '@/components/status-badge'
 import {
   Bell,
   AlertTriangle,
@@ -15,7 +14,15 @@ import {
   RefreshCw,
   Clock,
 } from 'lucide-react'
-import type { PoliceAlert, AlertStatus, AlertType, RouteCondition, PoliceDecision, RouteState } from '@/lib/types'
+import type {
+  PoliceAlert,
+  AlertStatus,
+  AlertType,
+  RouteCondition,
+  PoliceDecision,
+  RouteState,
+} from '@/lib/types'
+import { cn } from '@/lib/utils'
 
 const alertTypeConfig: Record<AlertType, { icon: React.ElementType; color: string }> = {
   traffic: { icon: AlertTriangle, color: 'text-yellow-500' },
@@ -24,11 +31,55 @@ const alertTypeConfig: Record<AlertType, { icon: React.ElementType; color: strin
   general: { icon: Info, color: 'text-gray-500' },
 }
 
+type AlertFilter = 'all' | 'pending' | 'acknowledged' | 'resolved'
+
+const FILTERS: { id: AlertFilter; label: string }[] = [
+  { id: 'all', label: 'All' },
+  { id: 'pending', label: 'Pending' },
+  { id: 'acknowledged', label: 'Waiting for Clearance' },
+  { id: 'resolved', label: 'Resolved' },
+]
+
+function alertStatusLabel(status: AlertStatus) {
+  if (status === 'acknowledged') return 'Waiting for Clearance'
+  if (status === 'pending') return 'Pending'
+  return 'Resolved'
+}
+
+function AlertStatusBadge({ status }: { status: AlertStatus }) {
+  return (
+    <span
+      className={cn(
+        'inline-flex items-center rounded-full border px-2.5 py-0.5 text-xs font-medium',
+        status === 'pending' && 'border-red-500/40 bg-red-500/15 text-red-400',
+        status === 'acknowledged' && 'border-yellow-500/40 bg-yellow-500/15 text-yellow-400',
+        status === 'resolved' && 'border-green-500/40 bg-green-500/15 text-green-400',
+      )}
+    >
+      {alertStatusLabel(status)}
+    </span>
+  )
+}
+
 export default function AlertsPage() {
-  const [alerts, setAlerts] = useState<(PoliceAlert & { trip?: { ambulance_id: string; source: string; destination: string } })[]>([])
+  const [alerts, setAlerts] = useState<
+    (PoliceAlert & {
+      trip?: { ambulance_id: string; source: string; destination: string }
+    })[]
+  >([])
   const [loading, setLoading] = useState(true)
-  const [filter, setFilter] = useState<'all' | AlertStatus>('all')
+  const [filter, setFilter] = useState<AlertFilter>('all')
   const supabase = createClient()
+
+  const loadAlerts = async () => {
+    const { data } = await supabase
+      .from('police_alerts')
+      .select('*, trip:ambulance_trips(ambulance_id, source, destination, route_data)')
+      .order('created_at', { ascending: false })
+
+    if (data) setAlerts(data)
+    setLoading(false)
+  }
 
   useEffect(() => {
     loadAlerts()
@@ -44,31 +95,22 @@ export default function AlertsPage() {
         },
         () => {
           loadAlerts()
-        }
+        },
       )
       .subscribe()
 
     return () => {
       supabase.removeChannel(channel)
     }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [])
-
-  const loadAlerts = async () => {
-    const { data } = await supabase
-      .from('police_alerts')
-      .select('*, trip:ambulance_trips(ambulance_id, source, destination, route_data)')
-      .order('created_at', { ascending: false })
-
-    if (data) setAlerts(data)
-    setLoading(false)
-  }
 
   const updateAlertStatus = async (alertId: string, status: AlertStatus) => {
     await supabase
       .from('police_alerts')
       .update({ alert_status: status, updated_at: new Date().toISOString() })
       .eq('id', alertId)
-    
+
     loadAlerts()
   }
 
@@ -123,12 +165,14 @@ export default function AlertsPage() {
     })
   }
 
-  const filteredAlerts = filter === 'all'
-    ? alerts
-    : alerts.filter(a => a.alert_status === filter)
+  const filteredAlerts = useMemo(
+    () => (filter === 'all' ? alerts : alerts.filter((a) => a.alert_status === filter)),
+    [alerts, filter],
+  )
 
-  const pendingCount = alerts.filter(a => a.alert_status === 'pending').length
-  const acknowledgedCount = alerts.filter(a => a.alert_status === 'acknowledged').length
+  const pendingCount = alerts.filter((a) => a.alert_status === 'pending').length
+  const waitingCount = alerts.filter((a) => a.alert_status === 'acknowledged').length
+  const resolvedCount = alerts.filter((a) => a.alert_status === 'resolved').length
 
   if (loading) {
     return (
@@ -140,50 +184,44 @@ export default function AlertsPage() {
 
   return (
     <div className="flex h-full flex-col">
-      {/* Header */}
-      <header className="border-b border-border bg-card/50 px-6 py-4">
-        <div className="flex items-center justify-between">
+      <header className="border-b border-white/10 bg-[#07111f]/70 px-6 py-4 backdrop-blur-xl">
+        <div className="flex flex-wrap items-center justify-between gap-3">
           <div>
             <h1 className="text-xl font-semibold text-foreground">Alerts</h1>
             <p className="text-sm text-muted-foreground">
-              Manage traffic and network alerts
+              Realtime Pending → Waiting for Clearance → Resolved
             </p>
           </div>
-          <div className="flex items-center gap-4">
-            {pendingCount > 0 && (
-              <div className="flex items-center gap-2 rounded-lg bg-red-500/10 px-3 py-1.5 text-red-400">
-                <Bell className="h-4 w-4" />
-                <span className="text-sm font-medium">{pendingCount} Pending</span>
-              </div>
-            )}
-            {acknowledgedCount > 0 && (
-              <div className="flex items-center gap-2 rounded-lg bg-blue-500/10 px-3 py-1.5 text-blue-400">
-                <CheckCircle className="h-4 w-4" />
-                <span className="text-sm font-medium">{acknowledgedCount} In Progress</span>
-              </div>
-            )}
+          <div className="flex flex-wrap items-center gap-2">
+            <div className="rounded-lg bg-red-500/10 px-3 py-1.5 text-sm text-red-400">
+              {pendingCount} Pending
+            </div>
+            <div className="rounded-lg bg-yellow-500/10 px-3 py-1.5 text-sm text-yellow-400">
+              {waitingCount} Waiting
+            </div>
+            <div className="rounded-lg bg-green-500/10 px-3 py-1.5 text-sm text-green-400">
+              {resolvedCount} Resolved
+            </div>
           </div>
         </div>
       </header>
 
       <div className="flex-1 overflow-auto p-6">
-        {/* Filter Tabs */}
-        <div className="mb-6 flex gap-2">
-          {(['all', 'pending', 'acknowledged', 'resolved'] as const).map((status) => (
+        <div className="mb-6 flex flex-wrap gap-2">
+          {FILTERS.map((item) => (
             <Button
-              key={status}
-              variant={filter === status ? 'default' : 'secondary'}
+              key={item.id}
+              variant={filter === item.id ? 'default' : 'secondary'}
               size="sm"
-              onClick={() => setFilter(status)}
-              className="capitalize"
+              onClick={() => setFilter(item.id)}
             >
-              {status === 'all' ? 'All Alerts' : status}
+              {item.label}
             </Button>
           ))}
         </div>
 
         {filteredAlerts.length === 0 ? (
-          <Card className="glass-card border-border/50">
+          <Card className="glass-card border-white/10">
             <CardContent className="flex flex-col items-center justify-center py-16">
               <div className="mb-4 flex h-16 w-16 items-center justify-center rounded-full bg-primary/10">
                 <Bell className="h-8 w-8 text-primary" />
@@ -192,7 +230,7 @@ export default function AlertsPage() {
               <p className="text-center text-muted-foreground">
                 {filter === 'all'
                   ? 'No alerts have been created yet.'
-                  : `No ${filter} alerts at the moment.`}
+                  : `No ${FILTERS.find((f) => f.id === filter)?.label.toLowerCase()} alerts at the moment.`}
               </p>
             </CardContent>
           </Card>
@@ -203,11 +241,13 @@ export default function AlertsPage() {
               const TypeIcon = typeConfig.icon
 
               return (
-                <Card key={alert.id} className="glass-card border-border/50">
+                <Card key={alert.id} className="glass-card border-white/10">
                   <CardHeader className="pb-2">
-                    <div className="flex items-center justify-between">
+                    <div className="flex items-center justify-between gap-3">
                       <div className="flex items-center gap-3">
-                        <div className={`flex h-10 w-10 items-center justify-center rounded-lg bg-secondary ${typeConfig.color}`}>
+                        <div
+                          className={`flex h-10 w-10 items-center justify-center rounded-lg bg-secondary ${typeConfig.color}`}
+                        >
                           <TypeIcon className="h-5 w-5" />
                         </div>
                         <div>
@@ -219,7 +259,7 @@ export default function AlertsPage() {
                           </CardDescription>
                         </div>
                       </div>
-                      <StatusBadge status={alert.alert_status} />
+                      <AlertStatusBadge status={alert.alert_status} />
                     </div>
                   </CardHeader>
                   <CardContent>
@@ -232,7 +272,7 @@ export default function AlertsPage() {
                       {alert.message && (
                         <p className="text-sm text-foreground">{alert.message}</p>
                       )}
-                      <div className="flex items-center justify-between">
+                      <div className="flex flex-wrap items-center justify-between gap-3">
                         <div className="flex items-center gap-2 text-xs text-muted-foreground">
                           <Clock className="h-3 w-3" />
                           {formatDate(alert.created_at)}
@@ -245,55 +285,111 @@ export default function AlertsPage() {
                                 variant="secondary"
                                 onClick={() => updateAlertStatus(alert.id, 'acknowledged')}
                               >
-                                Acknowledge
+                                Mark Waiting for Clearance
                               </Button>
                               <Button
                                 size="sm"
                                 variant="default"
-                                onClick={() => respondToAlert(alert, 'CLEAR_ROUTE', 'clear', 'CLEARED', 'Clear Route')}
+                                onClick={() =>
+                                  respondToAlert(
+                                    alert,
+                                    'CLEAR_ROUTE',
+                                    'clear',
+                                    'CLEARED',
+                                    'Clear Route',
+                                  )
+                                }
                               >
                                 Clear Route
                               </Button>
                               <Button
                                 size="sm"
                                 variant="secondary"
-                                onClick={() => respondToAlert(alert, 'REROUTE_REQUIRED', 'heavy_congestion', 'REROUTING', 'Reroute Required')}
+                                onClick={() =>
+                                  respondToAlert(
+                                    alert,
+                                    'REROUTE_REQUIRED',
+                                    'heavy_congestion',
+                                    'REROUTING',
+                                    'Reroute Required',
+                                  )
+                                }
                               >
                                 Reroute Required
                               </Button>
                               <Button
                                 size="sm"
                                 variant="destructive"
-                                onClick={() => respondToAlert(alert, 'ROAD_BLOCK_CONFIRMED', 'road_blocked', 'REROUTING', 'Road Block Confirmed')}
+                                onClick={() =>
+                                  respondToAlert(
+                                    alert,
+                                    'ROAD_BLOCK_CONFIRMED',
+                                    'road_blocked',
+                                    'REROUTING',
+                                    'Road Block Confirmed',
+                                  )
+                                }
                               >
                                 Road Block Confirmed
                               </Button>
                             </>
                           )}
                           {alert.alert_status === 'acknowledged' && (
-                            <div className="flex flex-wrap gap-2">
+                            <>
                               <Button
                                 size="sm"
                                 variant="default"
-                                onClick={() => respondToAlert(alert, 'CLEAR_ROUTE', 'clear', 'CLEARED', 'Clear Route')}
+                                onClick={() =>
+                                  respondToAlert(
+                                    alert,
+                                    'CLEAR_ROUTE',
+                                    'clear',
+                                    'CLEARED',
+                                    'Clear Route',
+                                  )
+                                }
                               >
                                 Clear Route
                               </Button>
                               <Button
                                 size="sm"
                                 variant="secondary"
-                                onClick={() => respondToAlert(alert, 'REROUTE_REQUIRED', 'heavy_congestion', 'REROUTING', 'Reroute Required')}
+                                onClick={() =>
+                                  respondToAlert(
+                                    alert,
+                                    'REROUTE_REQUIRED',
+                                    'heavy_congestion',
+                                    'REROUTING',
+                                    'Reroute Required',
+                                  )
+                                }
                               >
                                 Reroute Required
                               </Button>
                               <Button
                                 size="sm"
                                 variant="destructive"
-                                onClick={() => respondToAlert(alert, 'ROAD_BLOCK_CONFIRMED', 'road_blocked', 'REROUTING', 'Road Block Confirmed')}
+                                onClick={() =>
+                                  respondToAlert(
+                                    alert,
+                                    'ROAD_BLOCK_CONFIRMED',
+                                    'road_blocked',
+                                    'REROUTING',
+                                    'Road Block Confirmed',
+                                  )
+                                }
                               >
                                 Road Block Confirmed
                               </Button>
-                            </div>
+                              <Button
+                                size="sm"
+                                variant="outline"
+                                onClick={() => updateAlertStatus(alert.id, 'resolved')}
+                              >
+                                <CheckCircle className="mr-1 h-3.5 w-3.5" />
+                                Mark Resolved
+                              </Button>
+                            </>
                           )}
                         </div>
                       </div>

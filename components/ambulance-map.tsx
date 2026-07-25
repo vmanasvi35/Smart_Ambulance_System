@@ -4,11 +4,18 @@ import { useEffect, useRef, useState } from 'react'
 import type { AmbulanceTrip } from '@/lib/types'
 import type { Roadblock, SpawnedVehicle } from '@/lib/routing'
 
+export type MapHospital = {
+  name: string
+  lat: number
+  lng: number
+}
+
 interface AmbulanceMapProps {
   trips: AmbulanceTrip[]
   selectedTrip?: AmbulanceTrip | null
   onTripSelect?: (trip: AmbulanceTrip) => void
   showAllTrips?: boolean
+  hospitals?: MapHospital[]
   trafficLevel?: 'low' | 'medium' | 'high'
   roadblockMode?: boolean
   roadblocks?: Roadblock[]
@@ -22,6 +29,7 @@ export function AmbulanceMap({
   selectedTrip,
   onTripSelect,
   showAllTrips = true,
+  hospitals = [],
   trafficLevel = 'low',
   roadblockMode = false,
   roadblocks = [],
@@ -32,28 +40,29 @@ export function AmbulanceMap({
   const mapRef = useRef<HTMLDivElement>(null)
   const mapInstanceRef = useRef<L.Map | null>(null)
   const markersRef = useRef<L.LayerGroup | null>(null)
+  const hospitalsRef = useRef<L.LayerGroup | null>(null)
   const routeRef = useRef<L.Polyline | null>(null)
   const trafficLayerRef = useRef<L.LayerGroup | null>(null)
   const simulationLayerRef = useRef<L.LayerGroup | null>(null)
+  const lastFittedTripIdRef = useRef<string | null>(null)
   const [isReady, setIsReady] = useState(false)
   const [L, setL] = useState<typeof import('leaflet') | null>(null)
 
-  // Dynamically import Leaflet on client side only
   useEffect(() => {
     let mounted = true
-    
+
     const loadLeaflet = async () => {
       const leaflet = await import('leaflet')
       await import('leaflet/dist/leaflet.css')
-      
+
       if (mounted) {
         setL(leaflet.default as unknown as typeof import('leaflet'))
         setIsReady(true)
       }
     }
-    
+
     loadLeaflet()
-    
+
     return () => {
       mounted = false
     }
@@ -62,18 +71,28 @@ export function AmbulanceMap({
   useEffect(() => {
     if (!isReady || !L || !mapRef.current || mapInstanceRef.current) return
 
-    // Initialize map centered on Bangalore
-    mapInstanceRef.current = L.map(mapRef.current).setView([12.9716, 77.5946], 12)
+    mapInstanceRef.current = L.map(mapRef.current, {
+      zoomControl: true,
+      preferCanvas: true,
+    }).setView([12.9716, 77.5946], 12)
 
     L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
       attribution: '&copy; OpenStreetMap contributors',
     }).addTo(mapInstanceRef.current)
 
     markersRef.current = L.layerGroup().addTo(mapInstanceRef.current)
+    hospitalsRef.current = L.layerGroup().addTo(mapInstanceRef.current)
     trafficLayerRef.current = L.layerGroup().addTo(mapInstanceRef.current)
     simulationLayerRef.current = L.layerGroup().addTo(mapInstanceRef.current)
 
+    const map = mapInstanceRef.current
+    const invalidate = () => map.invalidateSize({ animate: false })
+    const timeoutId = window.setTimeout(invalidate, 80)
+    window.addEventListener('resize', invalidate)
+
     return () => {
+      window.clearTimeout(timeoutId)
+      window.removeEventListener('resize', invalidate)
       if (mapInstanceRef.current) {
         mapInstanceRef.current.remove()
         mapInstanceRef.current = null
@@ -101,9 +120,33 @@ export function AmbulanceMap({
   }, [L, roadblockMode, onRoadblockAdd])
 
   useEffect(() => {
-    if (!L || !mapInstanceRef.current || !markersRef.current || !trafficLayerRef.current || !simulationLayerRef.current) return
+    if (!L || !mapInstanceRef.current || !hospitalsRef.current) return
 
-    // Clear existing markers
+    hospitalsRef.current.clearLayers()
+
+    const hospitalIcon = L.divIcon({
+      className: 'custom-hospital-icon',
+      html: `
+        <div style="width: 28px; height: 28px; border-radius: 50%; background: rgba(34,197,94,0.12); border: 2px solid #22c55e; display: flex; align-items: center; justify-content: center; box-shadow: 0 0 10px rgba(34,197,94,0.25);">
+          <span style="font-size: 13px; line-height: 1;">🏥</span>
+        </div>
+      `,
+      iconSize: [28, 28],
+      iconAnchor: [14, 14],
+    })
+
+    hospitals.forEach((hospital) => {
+      L.marker([hospital.lat, hospital.lng], { icon: hospitalIcon })
+        .bindPopup(`<strong>Hospital:</strong> ${hospital.name}`)
+        .addTo(hospitalsRef.current!)
+    })
+  }, [L, hospitals])
+
+  useEffect(() => {
+    if (!L || !mapInstanceRef.current || !markersRef.current || !trafficLayerRef.current || !simulationLayerRef.current) {
+      return
+    }
+
     markersRef.current.clearLayers()
     trafficLayerRef.current.clearLayers()
     simulationLayerRef.current.clearLayers()
@@ -113,10 +156,10 @@ export function AmbulanceMap({
     }
 
     const tripsToShow = showAllTrips ? trips : selectedTrip ? [selectedTrip] : []
+    const focusTrip = selectedTrip ?? null
 
-    // Custom ambulance icon creator
-    const createAmbulanceIcon = (isActive: boolean) => {
-      return L.divIcon({
+    const createAmbulanceIcon = (isActive: boolean) =>
+      L.divIcon({
         className: 'custom-ambulance-icon',
         html: `
           <div style="position: relative;">
@@ -137,10 +180,9 @@ export function AmbulanceMap({
         iconSize: [34, 34],
         iconAnchor: [17, 17],
       })
-    }
 
-    const createRoadblockIcon = () => {
-      return L.divIcon({
+    const createRoadblockIcon = () =>
+      L.divIcon({
         className: 'custom-roadblock-icon',
         html: `
           <div style="width: 30px; height: 30px; border-radius: 8px; display: flex; align-items: center; justify-content: center; background-color: #f97316; border: 2px solid white; box-shadow: 0 4px 10px rgba(0,0,0,0.35);">
@@ -150,14 +192,13 @@ export function AmbulanceMap({
         iconSize: [30, 30],
         iconAnchor: [15, 15],
       })
-    }
 
     const routeColor =
-      selectedTrip?.route_condition === 'road_blocked'
+      focusTrip?.route_condition === 'road_blocked'
         ? '#ef4444'
-        : selectedTrip?.route_condition === 'heavy_congestion' || trafficLevel === 'high'
+        : focusTrip?.route_condition === 'heavy_congestion' || trafficLevel === 'high'
           ? '#f97316'
-          : selectedTrip?.route_condition === 'moderate_traffic' || trafficLevel === 'medium'
+          : focusTrip?.route_condition === 'moderate_traffic' || trafficLevel === 'medium'
             ? '#eab308'
             : '#22c55e'
 
@@ -188,45 +229,64 @@ export function AmbulanceMap({
     }
 
     tripsToShow.forEach((trip) => {
-      const isActive = trip.status === 'in_progress'
-      
-      // Add ambulance marker at current position
-      if (trip.current_lat && trip.current_lng) {
+      const isActive = trip.status === 'pending' || trip.status === 'in_progress'
+      const isFocused = focusTrip?.id === trip.id
+
+      if (trip.current_lat != null && trip.current_lng != null) {
         const marker = L.marker([trip.current_lat, trip.current_lng], {
           icon: createAmbulanceIcon(isActive),
-        })
-          .bindPopup(`
+          opacity: focusTrip && !isFocused ? 0.55 : 1,
+        }).bindPopup(`
             <div style="font-size: 14px; padding: 4px;">
               <strong>${trip.ambulance_id}</strong><br/>
-              ${trip.source} → ${trip.destination}<br/>
+              ${trip.source}${trip.destination ? ` → ${trip.destination}` : ''}<br/>
               Status: ${trip.status}<br/>
               ${trip.eta ? `ETA: ${trip.eta} min` : ''}
             </div>
           `)
-        
+
         if (onTripSelect) {
           marker.on('click', () => onTripSelect(trip))
         }
-        
+
         markersRef.current?.addLayer(marker)
       }
 
-      // Add source marker
-      if (trip.source_lat && trip.source_lng) {
-        const sourceMarker = L.marker([trip.source_lat, trip.source_lng], {
-          icon: createLocationIcon('source'),
-        }).bindPopup(`<strong>Pickup:</strong> ${trip.source}`)
-        markersRef.current?.addLayer(sourceMarker)
-      }
+      if (isFocused) {
+        if (trip.source_lat != null && trip.source_lng != null) {
+          markersRef.current?.addLayer(
+            L.marker([trip.source_lat, trip.source_lng], {
+              icon: createLocationIcon('source'),
+            }).bindPopup(`<strong>Pickup:</strong> ${trip.source}`),
+          )
+        }
 
-      // Add destination marker
-      if (trip.dest_lat && trip.dest_lng) {
-        const destMarker = L.marker([trip.dest_lat, trip.dest_lng], {
-          icon: createLocationIcon('destination'),
-        }).bindPopup(`<strong>Hospital:</strong> ${trip.destination}`)
-        markersRef.current?.addLayer(destMarker)
+        if (trip.dest_lat != null && trip.dest_lng != null) {
+          markersRef.current?.addLayer(
+            L.marker([trip.dest_lat, trip.dest_lng], {
+              icon: createLocationIcon('destination'),
+            }).bindPopup(`<strong>Hospital:</strong> ${trip.destination}`),
+          )
+        }
       }
     })
+
+    if (focusTrip && !tripsToShow.some((trip) => trip.id === focusTrip.id)) {
+      if (focusTrip.source_lat != null && focusTrip.source_lng != null) {
+        markersRef.current?.addLayer(
+          L.marker([focusTrip.source_lat, focusTrip.source_lng], {
+            icon: createLocationIcon('source'),
+          }).bindPopup(`<strong>Pickup:</strong> ${focusTrip.source}`),
+        )
+      }
+      if (focusTrip.dest_lat != null && focusTrip.dest_lng != null) {
+        markersRef.current?.addLayer(
+          L.marker([focusTrip.dest_lat, focusTrip.dest_lng], {
+            icon: createLocationIcon('destination'),
+          }).bindPopup(`<strong>Hospital:</strong> ${focusTrip.destination}`),
+        )
+      }
+    }
 
     roadblocks.forEach((roadblock) => {
       L.marker([roadblock.lat, roadblock.lng], {
@@ -244,38 +304,52 @@ export function AmbulanceMap({
         .addTo(simulationLayerRef.current!)
     })
 
-    // Draw route for selected trip
-    if (selectedTrip?.route_data?.waypoints && mapInstanceRef.current) {
-      const waypoints = selectedTrip.route_data.waypoints as [number, number][]
+    const waypoints = (focusTrip?.route_data?.waypoints as [number, number][] | undefined) ?? null
+    if (focusTrip && waypoints && waypoints.length > 1 && mapInstanceRef.current) {
       routeRef.current = L.polyline(waypoints, {
-        color: selectedTrip.status === 'in_progress' ? routeColor : '#3b82f6',
+        color: focusTrip.status === 'in_progress' ? routeColor : '#3b82f6',
         weight: 5,
-        opacity: 0.85,
+        opacity: 0.9,
         className: 'map-route-animated',
-        dashArray: selectedTrip.status === 'in_progress' ? '12 10' : '10, 10',
+        dashArray: '12 10',
+        lineCap: 'round',
+        lineJoin: 'round',
       }).addTo(mapInstanceRef.current)
 
-      if (trafficLevel !== 'low' || selectedTrip.route_condition === 'heavy_congestion' || selectedTrip.route_condition === 'moderate_traffic') {
-        const trafficPoints = waypoints.filter((_, index) => index % 6 === 0)
-        trafficPoints.forEach(([lat, lng]) => {
-          const high =
-            trafficLevel === 'high' || selectedTrip.route_condition === 'heavy_congestion'
-          L.circle([lat, lng], {
-            radius: high ? 320 : 190,
-            color: high ? '#f97316' : '#eab308',
-            fillColor: high ? '#f97316' : '#eab308',
-            fillOpacity: 0.18,
-            weight: 1,
-          }).addTo(trafficLayerRef.current!)
-        })
+      if (
+        trafficLevel !== 'low' ||
+        focusTrip.route_condition === 'heavy_congestion' ||
+        focusTrip.route_condition === 'moderate_traffic'
+      ) {
+        waypoints
+          .filter((_, index) => index % 6 === 0)
+          .forEach(([lat, lng]) => {
+            const high =
+              trafficLevel === 'high' || focusTrip.route_condition === 'heavy_congestion'
+            L.circle([lat, lng], {
+              radius: high ? 320 : 190,
+              color: high ? '#f97316' : '#eab308',
+              fillColor: high ? '#f97316' : '#eab308',
+              fillOpacity: 0.18,
+              weight: 1,
+            }).addTo(trafficLayerRef.current!)
+          })
       }
 
-      // Fit bounds to show the route
-      mapInstanceRef.current.fitBounds(routeRef.current.getBounds(), {
-        padding: [50, 50],
-        animate: true,
-        duration: 0.6,
-      })
+      if (lastFittedTripIdRef.current !== focusTrip.id) {
+        lastFittedTripIdRef.current = focusTrip.id
+        mapInstanceRef.current.fitBounds(routeRef.current.getBounds(), {
+          padding: [48, 48],
+          animate: true,
+          duration: 0.45,
+          maxZoom: 14,
+        })
+      }
+    } else if (!focusTrip) {
+      if (lastFittedTripIdRef.current !== null) {
+        lastFittedTripIdRef.current = null
+        mapInstanceRef.current.setView([12.9716, 77.5946], 12, { animate: true })
+      }
     }
   }, [L, trips, selectedTrip, showAllTrips, onTripSelect, trafficLevel, roadblocks, spawnedVehicles])
 

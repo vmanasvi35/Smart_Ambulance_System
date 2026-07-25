@@ -196,3 +196,90 @@ export function trafficLabel(level: TrafficLevel) {
   if (level === 'medium') return 'Medium Traffic'
   return 'Low Traffic'
 }
+
+export type NearbyHospital = {
+  name: string
+  lat: number
+  lng: number
+}
+
+/**
+ * Find the nearest hospital to a pickup point.
+ * Uses OpenStreetMap Overpass when available, then falls back to the local hospital catalog.
+ */
+export async function findNearestHospital(
+  pickupLat: number,
+  pickupLng: number,
+  radiusMeters = 8000,
+): Promise<NearbyHospital | null> {
+  const candidates: NearbyHospital[] = []
+
+  try {
+    const query = `
+      [out:json][timeout:25];
+      (
+        node["amenity"="hospital"](around:${radiusMeters},${pickupLat},${pickupLng});
+        way["amenity"="hospital"](around:${radiusMeters},${pickupLat},${pickupLng});
+      );
+      out center 20;
+    `
+
+    const response = await fetch('https://overpass-api.de/api/interpreter', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/x-www-form-urlencoded;charset=UTF-8' },
+      body: `data=${encodeURIComponent(query)}`,
+    })
+
+    if (response.ok) {
+      const data = (await response.json()) as {
+        elements?: Array<{
+          lat?: number
+          lon?: number
+          center?: { lat: number; lon: number }
+          tags?: { name?: string }
+        }>
+      }
+
+      for (const element of data.elements ?? []) {
+        const lat = element.lat ?? element.center?.lat
+        const lng = element.lon ?? element.center?.lon
+        if (lat == null || lng == null) continue
+        candidates.push({
+          name: element.tags?.name?.trim() || 'Nearby Hospital',
+          lat,
+          lng,
+        })
+      }
+    }
+  } catch {
+    // Fall through to local catalog.
+  }
+
+  if (candidates.length === 0) {
+    const { HOSPITALS } = await import('@/lib/types')
+    for (const hospital of HOSPITALS) {
+      candidates.push({
+        name: hospital.name,
+        lat: hospital.lat,
+        lng: hospital.lng,
+      })
+    }
+  }
+
+  if (candidates.length === 0) return null
+
+  let nearest = candidates[0]
+  let nearestDistance = calculateDistance(pickupLat, pickupLng, nearest.lat, nearest.lng)
+
+  for (let i = 1; i < candidates.length; i++) {
+    const hospital = candidates[i]
+    const distance = calculateDistance(pickupLat, pickupLng, hospital.lat, hospital.lng)
+    if (distance < nearestDistance) {
+      nearest = hospital
+      nearestDistance = distance
+    }
+  }
+
+  return nearest
+}
+

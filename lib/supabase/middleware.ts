@@ -34,10 +34,18 @@ export async function updateSession(request: NextRequest) {
     data: { user },
   } = await supabase.auth.getUser()
 
+  // Legacy dispatch login URL → shared auth
+  if (request.nextUrl.pathname.startsWith('/dispatch/login')) {
+    const url = request.nextUrl.clone()
+    url.pathname = user ? '/dispatch' : '/auth/login'
+    return NextResponse.redirect(url)
+  }
+
   // Redirect unauthenticated users from protected routes
   if (
     (request.nextUrl.pathname.startsWith('/driver') ||
-      request.nextUrl.pathname.startsWith('/police')) &&
+      request.nextUrl.pathname.startsWith('/police') ||
+      request.nextUrl.pathname.startsWith('/dispatch')) &&
     !user
   ) {
     const url = request.nextUrl.clone()
@@ -48,7 +56,7 @@ export async function updateSession(request: NextRequest) {
   // Redirect authenticated users from auth pages to their dashboard
   if (request.nextUrl.pathname.startsWith('/auth') && user) {
     const { profile } = await ensureUserProfile(supabase, user)
-    
+
     if (profile) {
       const url = request.nextUrl.clone()
       url.pathname = getDashboardPath(profile.role)

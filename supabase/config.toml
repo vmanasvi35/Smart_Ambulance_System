@@ -1,0 +1,12 @@
+# Minimal Supabase project config for CLI users.
+# Link with: supabase link --project-ref <ref>
+# Apply migrations with: supabase db push
+
+[project]
+id = "smart-ambulance-system"
+
+[api]
+enabled = true
+
+[db]
+major_version = 15

@@ -7,6 +7,7 @@ import { cn } from '@/lib/utils'
 
 export interface EmergencyRequest {
   id: string
+  incidentId?: string
   pickupLocation: string
   pickupLat: number
   pickupLng: number
@@ -18,9 +19,12 @@ export interface EmergencyRequest {
   status: 'pending' | 'assigned' | 'completed'
   assignedAmbulanceId?: string
   patientName?: string
+  age?: number
   emergencyType?: string
   notes?: string
   createdAt?: string
+  eta?: number
+  distance?: number
 }
 
 interface DispatchEmergencyQueueProps {
@@ -85,7 +89,7 @@ export function DispatchEmergencyQueue({
                 <div className="flex items-start justify-between gap-2">
                   <div className="min-w-0">
                     <span className="font-mono text-xs font-bold text-slate-300">
-                      INCIDENT-{req.id}
+                      {req.incidentId ?? `INC-${String(req.id).slice(0, 8).toUpperCase()}`}
                     </span>
                     <div className="flex items-center gap-1.5 text-[10px] text-muted-foreground mt-0.5 font-semibold">
                       <Clock className="h-3.5 w-3.5 text-muted-foreground" />
@@ -103,7 +107,10 @@ export function DispatchEmergencyQueue({
                     <MapPin className="h-4 w-4 shrink-0 text-red-500 mt-0.5" />
                     <div>
                       <span className="font-semibold text-slate-300">Patient: </span>
-                      <span>{req.patientName || 'Unspecified'}</span>
+                      <span>
+                        {req.patientName || 'Unspecified'}
+                        {req.age != null ? ` (${req.age}y)` : ''}
+                      </span>
                     </div>
                   </div>
 
@@ -123,9 +130,15 @@ export function DispatchEmergencyQueue({
                     </div>
                   </div>
 
-                  {(req.emergencyType || req.notes) && (
+                  {(req.emergencyType || req.notes || req.eta != null) && (
                     <div className="rounded-lg border border-white/10 bg-white/[0.03] p-2 text-[10px] text-slate-300">
                       {req.emergencyType && <div><span className="font-semibold text-slate-200">Type:</span> {req.emergencyType}</div>}
+                      {req.eta != null && (
+                        <div className="mt-1">
+                          <span className="font-semibold text-slate-200">ETA:</span> {req.eta} min
+                          {req.distance != null ? ` · ${req.distance.toFixed(1)} km` : ''}
+                        </div>
+                      )}
                       {req.notes && <div className="mt-1"><span className="font-semibold text-slate-200">Notes:</span> {req.notes}</div>}
                     </div>
                   )}

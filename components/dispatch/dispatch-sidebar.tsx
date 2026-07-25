@@ -4,17 +4,15 @@ import { useState } from 'react'
 import Link from 'next/link'
 import { motion, AnimatePresence } from 'framer-motion'
 import { 
-  Radio, 
-  Map, 
   Settings, 
   AlertOctagon, 
-  Clock, 
   Activity,
   Menu,
   X,
   ChevronLeft,
   ChevronRight,
-  ShieldAlert
+  ShieldAlert,
+  ListChecks,
 } from 'lucide-react'
 import { cn } from '@/lib/utils'
 
@@ -29,7 +27,7 @@ export function DispatchSidebar({ activeSection = 'control-room', onSectionChang
 
   const navItems = [
     { id: 'control-room', label: 'Control Room', icon: Activity },
-    { id: 'radio', label: 'Radio Frequency', icon: Radio },
+    { id: 'dispatch-queue', label: 'Dispatch Queue', icon: ListChecks },
     { id: 'incidents', label: 'Incident Log', icon: AlertOctagon },
     { id: 'settings', label: 'System Settings', icon: Settings },
   ]
