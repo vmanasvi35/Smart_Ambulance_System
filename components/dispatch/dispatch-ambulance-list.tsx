@@ -156,7 +156,7 @@ export function DispatchAmbulanceList({
                             ? 'bg-blue-500/10 text-blue-400 border-blue-500/25'
                             : 'bg-emerald-500/10 text-emerald-400 border-emerald-500/25'
                       }`
-                    >
+                    }>
                       {amb.clearanceStatus === 'pending' ? 'Clearance Pending' : amb.clearanceStatus === 'clearing' ? 'Clearing' : 'Cleared'}
                     </span>
                   </div>

@@ -415,7 +415,7 @@ export default function PoliceControlRoom() {
                               ? 'bg-blue-500/10 text-blue-400 border-blue-500/25'
                               : 'bg-emerald-500/10 text-emerald-400 border-emerald-500/25'
                         }`
-                      >
+                      }>
                         {clearanceStatus === 'pending'
                           ? 'Clearance Pending'
                           : clearanceStatus === 'clearing'
