@@ -1,6 +1,99 @@
 import type { SupabaseClient } from '@supabase/supabase-js'
-import type { AmbulanceTrip, PoliceDecision, RouteCondition, RouteState } from '@/lib/types'
+import type { AmbulanceTrip, AlertType, AlertStatus, PoliceDecision, RouteCondition, RouteState } from '@/lib/types'
 import type { SmartRouteData } from '@/lib/routing'
+
+const alertQueueMap = new Map<string, Promise<any>>()
+
+export async function upsertPoliceAlert(
+  supabase: SupabaseClient,
+  trip: AmbulanceTrip,
+  payload: { alert_type: AlertType; alert_status: AlertStatus; message: string; assigned_police?: string | null },
+) {
+  const tripId = trip.id
+  const existingPromise = alertQueueMap.get(tripId) || Promise.resolve()
+
+  const newPromise = existingPromise.then(async () => {
+    const { data: existingAlerts } = await supabase
+      .from('police_alerts')
+      .select('id, created_at')
+      .eq('trip_id', tripId)
+      .order('created_at', { ascending: false })
+
+    const now = new Date().toISOString()
+
+    if (existingAlerts && existingAlerts.length > 0) {
+      const [latest, ...duplicates] = existingAlerts
+
+      await supabase
+        .from('police_alerts')
+        .update({
+          ...payload,
+          updated_at: now,
+        })
+        .eq('id', latest.id)
+
+      if (duplicates.length) {
+        await supabase
+          .from('police_alerts')
+          .delete()
+          .in('id', duplicates.map((alert) => alert.id))
+      }
+    } else {
+      await supabase
+        .from('police_alerts')
+        .insert({
+          trip_id: tripId,
+          ...payload,
+        })
+    }
+  }).catch((err) => {
+    console.error('Error in upsertPoliceAlert serialized execution:', err)
+  })
+
+  alertQueueMap.set(tripId, newPromise)
+  return newPromise
+}
+
+export async function resolvePoliceAlerts(
+  supabase: SupabaseClient,
+  tripId: string,
+  message?: string,
+  assignedPolice?: string | null,
+) {
+  const payload: Record<string, unknown> = {
+    alert_status: 'resolved',
+    updated_at: new Date().toISOString(),
+  }
+
+  if (message !== undefined) payload.message = message
+  if (assignedPolice !== undefined) payload.assigned_police = assignedPolice
+
+  await supabase
+    .from('police_alerts')
+    .update(payload)
+    .eq('trip_id', tripId)
+}
+
+export async function acknowledgePoliceAlerts(
+  supabase: SupabaseClient,
+  tripId: string,
+  message?: string,
+  assignedPolice?: string | null,
+) {
+  const payload: Record<string, unknown> = {
+    alert_status: 'acknowledged',
+    updated_at: new Date().toISOString(),
+  }
+
+  if (message !== undefined) payload.message = message
+  if (assignedPolice !== undefined) payload.assigned_police = assignedPolice
+
+  await supabase
+    .from('police_alerts')
+    .update(payload)
+    .eq('trip_id', tripId)
+    .eq('alert_status', 'pending')
+}
 
 export async function respondToRouteAlert(
   supabase: SupabaseClient,
@@ -36,29 +129,12 @@ export async function respondToRouteAlert(
     })
     .eq('id', trip.id)
 
-  // Update existing pending or acknowledged alerts to 'resolved'
-  const { data: updatedAlerts } = await supabase
-    .from('police_alerts')
-    .update({
-      alert_status: 'resolved',
-      message: `${response} response issued for ${trip.ambulance_id}. Driver dashboard will handle navigation updates.`,
-      assigned_police: user?.id,
-      updated_at: new Date().toISOString(),
-    })
-    .eq('trip_id', trip.id)
-    .in('alert_status', ['pending', 'acknowledged'])
-    .select()
-
-  // If no active alerts were found, insert a resolved route assessment alert
-  if (!updatedAlerts || updatedAlerts.length === 0) {
-    await supabase.from('police_alerts').insert({
-      trip_id: trip.id,
-      alert_type: 'route_assessment',
-      message: `${response} response issued for ${trip.ambulance_id}. Driver dashboard will handle navigation updates.`,
-      assigned_police: user?.id,
-      alert_status: 'resolved',
-    })
-  }
+  await upsertPoliceAlert(supabase, trip, {
+    alert_type: 'route_assessment',
+    alert_status: 'resolved',
+    message: `${response} response issued for ${trip.ambulance_id}. Driver dashboard will handle navigation updates.`,
+    assigned_police: user?.id ?? null,
+  })
 }
 
 export function getSmartRoute(trip: AmbulanceTrip | null | undefined): SmartRouteData | null {

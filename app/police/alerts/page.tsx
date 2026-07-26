@@ -65,9 +65,18 @@ export default function AlertsPage() {
       .order('created_at', { ascending: false })
 
     if (data) {
+      // Deduplicate alerts by trip_id to ensure strictly 1 alert per trip is displayed
+      const uniqueAlertsMap = new Map<string, typeof data[0]>()
+      for (const alert of data) {
+        if (!uniqueAlertsMap.has(alert.trip_id)) {
+          uniqueAlertsMap.set(alert.trip_id, alert)
+        }
+      }
+      const uniqueAlerts = Array.from(uniqueAlertsMap.values())
+
       // Fetch full driver profiles for each trip
       const alertsWithDrivers = await Promise.all(
-        data.map(async (alert) => {
+        uniqueAlerts.map(async (alert) => {
           if (alert.trip?.driver_id) {
             const { data: driverData } = await supabase
               .from('profiles')

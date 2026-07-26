@@ -12,6 +12,7 @@ import { AmbulanceMap } from '@/components/ambulance-map'
 import { calculateSmartRoute, findNearestHospital, calculateDistance } from '@/lib/routing'
 import { createClient } from '@/lib/supabase/client'
 import { BANGALORE_LOCATIONS, HOSPITALS, AmbulanceTrip } from '@/lib/types'
+import { ensureUserProfile } from '@/lib/profiles'
 import {
   generateIncidentId,
   normalizeTemplatePriority,
@@ -74,13 +75,19 @@ export default function DispatchDashboard() {
     // Load current user profile (dispatcher)
     const { data: { user } } = await supabase.auth.getUser()
     if (user) {
-      const { data: profile } = await supabase
-        .from('profiles')
-        .select('*')
-        .eq('id', user.id)
-        .maybeSingle()
+      const { profile, error: profileError } = await ensureUserProfile(supabase, user)
+      if (profileError) {
+        console.error('Failed to ensure user profile:', profileError)
+      }
       if (profile) {
-        setCurrentUserProfile(profile)
+        const { data: profileData } = await supabase
+          .from('profiles')
+          .select('*')
+          .eq('id', user.id)
+          .maybeSingle()
+        if (profileData) {
+          setCurrentUserProfile(profileData)
+        }
       }
     }
 
@@ -525,6 +532,18 @@ export default function DispatchDashboard() {
       const {
         data: { user },
       } = await supabase.auth.getUser()
+
+      if (!user) {
+        throw new Error('You must be signed in as a dispatcher to create an emergency.')
+      }
+
+      const { profile, error: profileError } = await ensureUserProfile(supabase, user)
+      if (profileError) {
+        throw new Error('Unable to verify dispatcher profile: ' + profileError.message)
+      }
+      if (!profile || profile.role !== 'dispatcher') {
+        throw new Error('Only dispatchers are allowed to create emergencies.')
+      }
 
       const { data: inserted, error } = await supabase
         .from('emergency_requests')

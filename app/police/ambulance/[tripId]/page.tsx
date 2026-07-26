@@ -24,7 +24,7 @@ import {
 import { Button } from '@/components/ui/button'
 import { createClient } from '@/lib/supabase/client'
 import { AmbulanceMap } from '@/components/ambulance-map'
-import { priorityForTrip } from '@/lib/police-actions'
+import { priorityForTrip, resolvePoliceAlerts } from '@/lib/police-actions'
 import { calculateSmartRoute } from '@/lib/routing'
 import type { AmbulanceTrip, Profile, ActivityLogRow, ClearanceStatus } from '@/lib/types'
 import { cn } from '@/lib/utils'
@@ -156,15 +156,11 @@ export default function AmbulanceDetailsPage() {
       message: 'Police cleared traffic corridor: route is now clear.',
     })
 
-    await supabase
-      .from('police_alerts')
-      .update({
-        alert_status: 'resolved',
-        message: 'Police successfully cleared traffic corridor.',
-        updated_at: new Date().toISOString(),
-      })
-      .eq('trip_id', trip.id)
-      .in('alert_status', ['pending', 'acknowledged'])
+    await resolvePoliceAlerts(
+      supabase,
+      trip.id,
+      'Police successfully cleared traffic corridor.',
+    )
 
     await loadTrip()
     await loadLogs()
@@ -198,15 +194,11 @@ export default function AmbulanceDetailsPage() {
       message: 'Police managed traffic corridor: slow but manageable.',
     })
 
-    await supabase
-      .from('police_alerts')
-      .update({
-        alert_status: 'resolved',
-        message: 'Police managed traffic corridor.',
-        updated_at: new Date().toISOString(),
-      })
-      .eq('trip_id', trip.id)
-      .in('alert_status', ['pending', 'acknowledged'])
+    await resolvePoliceAlerts(
+      supabase,
+      trip.id,
+      'Police managed traffic corridor.',
+    )
 
     await loadTrip()
     await loadLogs()
@@ -266,15 +258,11 @@ export default function AmbulanceDetailsPage() {
       message: `Police requested optimal route recalculation (Reroute #${nextRerouteCount}).`,
     })
 
-    await supabase
-      .from('police_alerts')
-      .update({
-        alert_status: 'resolved',
-        message: 'Police requested route recalculation.',
-        updated_at: new Date().toISOString(),
-      })
-      .eq('trip_id', trip.id)
-      .in('alert_status', ['pending', 'acknowledged'])
+    await resolvePoliceAlerts(
+      supabase,
+      trip.id,
+      'Police requested route recalculation.',
+    )
 
     await loadTrip()
     await loadLogs()

@@ -249,8 +249,16 @@ export function AmbulanceMap({
       const isActive = trip.status === 'pending' || trip.status === 'in_progress'
       const isFocused = focusTrip?.id === trip.id
 
-      if (trip.current_lat != null && trip.current_lng != null) {
-        const currentPosition: [number, number] = [trip.current_lat, trip.current_lng]
+      const currentPosition =
+        trip.current_lat != null && trip.current_lng != null
+          ? [trip.current_lat, trip.current_lng] as [number, number]
+          : trip.source_lat != null && trip.source_lng != null
+            ? [trip.source_lat, trip.source_lng] as [number, number]
+            : trip.dest_lat != null && trip.dest_lng != null
+              ? [trip.dest_lat, trip.dest_lng] as [number, number]
+              : null
+
+      if (currentPosition) {
         const previousPosition = previousPositionsRef.current.get(trip.id)
         
         let marker = ambulanceMarkersRef.current.get(trip.id)

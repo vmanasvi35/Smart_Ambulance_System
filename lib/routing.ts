@@ -35,6 +35,8 @@ export interface SmartRouteData {
   manualRerouteCount?: number
   roadblocks?: Roadblock[]
   spawnedVehicles?: SpawnedVehicle[]
+  remainingDistance?: number
+  progressPosition?: number
 }
 
 export interface RouteRequest {
@@ -67,6 +69,41 @@ export function calculateDistance(
       Math.sin(dLng / 2)
 
   return earthRadiusKm * (2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a)))
+}
+
+export function interpolateRoutePosition(waypoints: LatLngTuple[], position: number): LatLngTuple {
+  if (waypoints.length === 0) return [0, 0]
+  const clamped = Math.max(0, Math.min(position, waypoints.length - 1))
+  const lower = Math.floor(clamped)
+  const upper = Math.min(lower + 1, waypoints.length - 1)
+  const ratio = clamped - lower
+  const [lat1, lng1] = waypoints[lower]
+  const [lat2, lng2] = waypoints[upper]
+  return [lat1 + (lat2 - lat1) * ratio, lng1 + (lng2 - lng1) * ratio]
+}
+
+export function routeRemainingDistance(waypoints: LatLngTuple[], position: number): number {
+  if (waypoints.length < 2) return 0
+  const clamped = Math.max(0, Math.min(position, waypoints.length - 1))
+  const lower = Math.floor(clamped)
+  const ratio = clamped - lower
+  let remaining = 0
+
+  for (let index = lower + 1; index < waypoints.length; index += 1) {
+    const [latA, lngA] = waypoints[index - 1]
+    const [latB, lngB] = waypoints[index]
+    remaining += calculateDistance(latA, lngA, latB, lngB)
+  }
+
+  if (lower < waypoints.length - 1) {
+    const [latA, lngA] = waypoints[lower]
+    const [latB, lngB] = waypoints[lower + 1]
+    const currentLat = latA + (latB - latA) * ratio
+    const currentLng = lngA + (lngB - lngA) * ratio
+    remaining -= calculateDistance(latA, lngA, currentLat, currentLng)
+  }
+
+  return Math.max(0, remaining)
 }
 
 function generateFallbackRoute(

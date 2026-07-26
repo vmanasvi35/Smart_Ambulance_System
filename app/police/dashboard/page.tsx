@@ -20,15 +20,21 @@ import { AmbulanceMap } from '@/components/ambulance-map'
 import { PoliceStatCard } from '@/components/police/stat-card'
 import { Button } from '@/components/ui/button'
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card'
-import { startOfTodayISO } from '@/lib/police-actions'
+import {
+  acknowledgePoliceAlerts,
+  needsPoliceIntervention,
+  resolvePoliceAlerts,
+  startOfTodayISO,
+} from '@/lib/police-actions'
 import { fetchRecentActivity, formatActivityClock, activityTone } from '@/lib/activity-logs'
 import { normalizeTripWorkflowStatus, TRIP_WORKFLOW_STATUS } from '@/lib/trip-status'
-import type {
-  AmbulanceTrip,
-  ClearanceStatus,
-  PoliceAlert,
-  PoliceDecision,
-  RouteState,
+import {
+  BANGALORE_LOCATIONS,
+  type AmbulanceTrip,
+  type ClearanceStatus,
+  type PoliceAlert,
+  type PoliceDecision,
+  type RouteState,
 } from '@/lib/types'
 import { cn } from '@/lib/utils'
 
@@ -57,11 +63,6 @@ function getClearanceStatus(trip: AmbulanceTrip): ClearanceStatus {
   return 'cleared'
 }
 
-function needsPoliceAttention(trip: AmbulanceTrip) {
-  const status = getClearanceStatus(trip)
-  return status === 'pending' || status === 'clearing'
-}
-
 function clearanceBadgeClass(status: ClearanceStatus) {
   if (status === 'pending') return 'border-red-500/40 bg-red-500/15 text-red-400'
   if (status === 'clearing') return 'border-yellow-500/40 bg-yellow-500/15 text-yellow-400'
@@ -81,6 +82,7 @@ function formatClock(value?: string | null) {
 export default function PoliceControlRoom() {
   const [trips, setTrips] = useState<AmbulanceTrip[]>([])
   const [todayAlerts, setTodayAlerts] = useState<PoliceAlert[]>([])
+  const [activeAlerts, setActiveAlerts] = useState<PoliceAlert[]>([])
   const [selectedTrip, setSelectedTrip] = useState<AmbulanceTrip | null>(null)
   const [loading, setLoading] = useState(true)
   const [activity, setActivity] = useState<ActivityItem[]>([])
@@ -117,37 +119,92 @@ export default function PoliceControlRoom() {
   }, [supabase])
 
   const loadData = useCallback(async () => {
-    const [{ data: activeTripsData }, { data: recentCompletedData }, { data: alertsData }] =
-      await Promise.all([
-        supabase
-          .from('ambulance_trips')
-          .select('*, driver:profiles!ambulance_trips_driver_id_fkey(*)')
-          .in('status', ['pending', 'in_progress'])
-          .order('created_at', { ascending: false }),
-        supabase
-          .from('ambulance_trips')
-          .select('id, ambulance_id, destination, status, updated_at')
-          .eq('status', 'completed')
-          .gte('updated_at', startOfTodayISO())
-          .order('updated_at', { ascending: false })
-          .limit(20),
-        supabase
-          .from('police_alerts')
-          .select('*')
-          .gte('created_at', startOfTodayISO())
-          .order('created_at', { ascending: false }),
-      ])
+    const [
+      { data: driverProfilesData },
+      { data: activeTripsData },
+      { data: recentCompletedData },
+      { data: alertsData },
+      { data: activeAlertsData },
+    ] = await Promise.all([
+      supabase
+        .from('profiles')
+        .select('*')
+        .eq('role', 'driver'),
+      supabase
+        .from('ambulance_trips')
+        .select('*, driver:profiles!ambulance_trips_driver_id_fkey(*)')
+        .in('status', ['pending', 'in_progress'])
+        .order('created_at', { ascending: false }),
+      supabase
+        .from('ambulance_trips')
+        .select('id, ambulance_id, destination, status, updated_at')
+        .eq('status', 'completed')
+        .gte('updated_at', startOfTodayISO())
+        .order('updated_at', { ascending: false })
+        .limit(20),
+      supabase
+        .from('police_alerts')
+        .select('*')
+        .gte('created_at', startOfTodayISO())
+        .order('created_at', { ascending: false }),
+      supabase
+        .from('police_alerts')
+        .select('*')
+        .in('alert_status', ['pending', 'acknowledged'])
+        .order('created_at', { ascending: false }),
+    ])
+
+    const dbDrivers = driverProfilesData ?? []
+    const activeTrips = activeTripsData ?? []
+
+    // Build complete trip representation for available and assigned ambulances
+    const mapTrips: AmbulanceTrip[] = dbDrivers.map((driver, index) => {
+      const activeTrip = activeTrips.find((t) => t.driver_id === driver.id)
+      const locationPreset = BANGALORE_LOCATIONS[index % BANGALORE_LOCATIONS.length]
+      const ambId = activeTrip?.ambulance_id || `AMB-${driver.full_name.substring(0, 3).toUpperCase()}-${driver.id.substring(0, 3).toUpperCase()}`
+
+      if (activeTrip) {
+        return {
+          ...activeTrip,
+          ambulance_id: ambId,
+          driver: activeTrip.driver || driver,
+        }
+      }
+
+      return {
+        id: `available-${driver.id}`,
+        driver_id: driver.id,
+        ambulance_id: ambId,
+        source: locationPreset.name,
+        destination: 'Standby Base',
+        source_lat: locationPreset.lat,
+        source_lng: locationPreset.lng,
+        dest_lat: null,
+        dest_lng: null,
+        current_lat: locationPreset.lat,
+        current_lng: locationPreset.lng,
+        status: 'pending',
+        route_condition: 'clear',
+        route_data: {
+          status: TRIP_WORKFLOW_STATUS.available,
+          waypoints: [[locationPreset.lat, locationPreset.lng]],
+        },
+        created_at: new Date().toISOString(),
+        updated_at: new Date().toISOString(),
+        driver: driver,
+      } as AmbulanceTrip
+    })
+
+    for (const trip of activeTrips) {
+      if (!mapTrips.some((t) => t.id === trip.id)) {
+        mapTrips.push(trip)
+      }
+    }
 
     if (activeTripsData) {
       for (const trip of activeTripsData) {
         knownTripStatuses.current.set(trip.id, trip.status)
       }
-
-      setTrips(activeTripsData)
-      setSelectedTrip((prev) => {
-        if (!prev) return null
-        return activeTripsData.find((trip) => trip.id === prev.id) ?? null
-      })
     }
 
     if (recentCompletedData) {
@@ -156,9 +213,14 @@ export default function PoliceControlRoom() {
       }
     }
 
-    if (alertsData) {
-      setTodayAlerts(alertsData)
-    }
+    setTrips(mapTrips)
+    setSelectedTrip((prev) => {
+      if (!prev) return null
+      return mapTrips.find((trip) => trip.id === prev.id) ?? null
+    })
+
+    setTodayAlerts(alertsData ?? [])
+    setActiveAlerts(activeAlertsData ?? [])
 
     await loadActivityLogs()
     setLoading(false)
@@ -170,8 +232,7 @@ export default function PoliceControlRoom() {
     const notificationChannel = supabase
       .channel('ambulance-notifications')
       .on('broadcast', { event: 'notification' }, ({ payload }) => {
-        const eventType = payload?.event_type
-        if (!payload || !['dispatch_assigned', 'driver_accepted'].includes(eventType)) return
+        if (!payload) return
         loadData()
       })
       .subscribe()
@@ -237,24 +298,11 @@ export default function PoliceControlRoom() {
       })
       .eq('id', trip.id)
 
-    const { data: activeAlerts } = await supabase
-      .from('police_alerts')
-      .select('id, message')
-      .eq('trip_id', trip.id)
-      .in('alert_status', ['pending', 'acknowledged'])
-
-    if (activeAlerts) {
-      for (const alert of activeAlerts) {
-        await supabase
-          .from('police_alerts')
-          .update({
-            alert_status: 'resolved',
-            message: `${alert.message ?? ''} Decision: Road cleared by police.`,
-            updated_at: new Date().toISOString(),
-          })
-          .eq('id', alert.id)
-      }
-    }
+    await resolvePoliceAlerts(
+      supabase,
+      trip.id,
+      'Decision: Road cleared by police.',
+    )
 
     pushActivity(`Road cleared for ${trip.ambulance_id}`, 'success')
     await loadData()
@@ -281,24 +329,11 @@ export default function PoliceControlRoom() {
       })
       .eq('id', trip.id)
 
-    const { data: activeAlerts } = await supabase
-      .from('police_alerts')
-      .select('id, message')
-      .eq('trip_id', trip.id)
-      .in('alert_status', ['pending', 'acknowledged'])
-
-    if (activeAlerts) {
-      for (const alert of activeAlerts) {
-        await supabase
-          .from('police_alerts')
-          .update({
-            alert_status: 'resolved',
-            message: `${alert.message ?? ''} Decision: Traffic managed by police.`,
-            updated_at: new Date().toISOString(),
-          })
-          .eq('id', alert.id)
-      }
-    }
+    await resolvePoliceAlerts(
+      supabase,
+      trip.id,
+      'Decision: Traffic managed by police.',
+    )
 
     pushActivity(`Traffic managed for ${trip.ambulance_id}`, 'success')
     await loadData()
@@ -325,24 +360,11 @@ export default function PoliceControlRoom() {
       })
       .eq('id', trip.id)
 
-    const { data: activeAlerts } = await supabase
-      .from('police_alerts')
-      .select('id, message')
-      .eq('trip_id', trip.id)
-      .in('alert_status', ['pending', 'acknowledged'])
-
-    if (activeAlerts) {
-      for (const alert of activeAlerts) {
-        await supabase
-          .from('police_alerts')
-          .update({
-            alert_status: 'acknowledged',
-            message: `${alert.message ?? ''} Decision: Reroute requested by police.`,
-            updated_at: new Date().toISOString(),
-          })
-          .eq('id', alert.id)
-      }
-    }
+    await acknowledgePoliceAlerts(
+      supabase,
+      trip.id,
+      'Decision: Reroute requested by police.',
+    )
 
     pushActivity(`Reroute requested for ${trip.ambulance_id}`, 'warning')
     await loadData()
@@ -350,23 +372,48 @@ export default function PoliceControlRoom() {
   }
 
 
-  const emergencyTrips = useMemo(
-    () => trips.filter((trip) => needsPoliceAttention(trip)),
-    [trips],
+  const activeAlertTripIds = useMemo(
+    () => new Set(activeAlerts.map((alert) => alert.trip_id)),
+    [activeAlerts],
   )
 
-  const activeAlertsCount = emergencyTrips.filter((trip) => getClearanceStatus(trip) === 'pending').length
-  const activeAmbulancesNeedingClearance = emergencyTrips.length
-  const routesClearedToday = todayAlerts.filter((alert) => {
-    const message = (alert.message ?? '').toLowerCase()
-    return (
-      alert.alert_status === 'resolved' &&
-      (message.includes('clear') || message.includes('cleared') || message.includes('preemption'))
+  const emergencyTrips = useMemo(() => {
+    const tripsWithAlerts = trips.filter((trip) => activeAlertTripIds.has(trip.id))
+    const tripsNeedingAttention = trips.filter(
+      (trip) => needsPoliceIntervention(trip) && !activeAlertTripIds.has(trip.id),
     )
-  }).length
+
+    return [...tripsWithAlerts, ...tripsNeedingAttention]
+  }, [activeAlertTripIds, trips])
+
+  const activeAlertsCount = useMemo(
+    () => new Set(activeAlerts.filter((alert) => alert.alert_status === 'pending').map((a) => a.trip_id)).size,
+    [activeAlerts],
+  )
+  const activeAmbulancesNeedingClearance = emergencyTrips.length
+  const routesClearedToday = useMemo(() => {
+    const clearedTripIds = new Set(
+      todayAlerts
+        .filter((alert) => {
+          const message = (alert.message ?? '').toLowerCase()
+          const isResolved = alert.alert_status === 'resolved'
+          const isMerged = message.includes('duplicate') || message.includes('merged')
+          return isResolved && !isMerged
+        })
+        .map((alert) => alert.trip_id),
+    )
+
+    return clearedTripIds.size
+  }, [todayAlerts])
 
   const averageResponseTime = useMemo(() => {
-    const resolved = todayAlerts.filter((alert) => alert.alert_status === 'resolved')
+    const resolved = todayAlerts.filter((alert) => {
+      const message = (alert.message ?? '').toLowerCase()
+      const isMerged = message.includes('duplicate') || message.includes('merged')
+      const isAutoCompleted = message.includes('completed') || message.includes('closed automatically')
+      return alert.alert_status === 'resolved' && !isMerged && !isAutoCompleted
+    })
+    
     if (resolved.length === 0) return null
 
     const totalMinutes = resolved.reduce((sum, alert) => {
@@ -469,13 +516,13 @@ export default function PoliceControlRoom() {
                 </Button>
               )}
             </CardHeader>
-            <CardContent className="p-3 sm:p-4 flex-1 min-h-0">
+            <CardContent className="p-3 sm:p-4 flex-1 min-h-0 relative">
               <AmbulanceMap
                 trips={trips}
                 selectedTrip={selectedTrip}
                 onTripSelect={setSelectedTrip}
                 showAllTrips={!selectedTrip}
-                className="h-full w-full"
+                className="h-full w-full absolute inset-0"
               />
             </CardContent>
           </Card>

@@ -546,8 +546,20 @@ CREATE POLICY alerts_insert_policy ON public.police_alerts
 
 CREATE POLICY alerts_update_policy ON public.police_alerts
   FOR UPDATE TO authenticated
-  USING (public.current_user_role() IN ('police', 'dispatcher'))
-  WITH CHECK (public.current_user_role() IN ('police', 'dispatcher'));
+  USING (
+    public.current_user_role() IN ('police', 'dispatcher')
+    OR EXISTS (
+      SELECT 1 FROM public.ambulance_trips t
+      WHERE t.id = police_alerts.trip_id AND t.driver_id = auth.uid()
+    )
+  )
+  WITH CHECK (
+    public.current_user_role() IN ('police', 'dispatcher')
+    OR EXISTS (
+      SELECT 1 FROM public.ambulance_trips t
+      WHERE t.id = police_alerts.trip_id AND t.driver_id = auth.uid()
+    )
+  );
 
 CREATE POLICY alerts_delete_policy ON public.police_alerts
   FOR DELETE TO authenticated
