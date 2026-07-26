@@ -521,7 +521,7 @@ export default function PoliceControlRoom() {
                 trips={trips}
                 selectedTrip={selectedTrip}
                 onTripSelect={setSelectedTrip}
-                showAllTrips={!selectedTrip}
+                showAllTrips
                 className="h-full w-full absolute inset-0"
               />
             </CardContent>

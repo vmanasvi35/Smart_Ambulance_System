@@ -1,5 +1,7 @@
 'use client'
 
+// Ambulance Map Component with dynamic marker color coding (Red = Assigned, Blue = Available)
+
 import { useEffect, useRef, useState } from 'react'
 import type { AmbulanceTrip } from '@/lib/types'
 import type { Roadblock, SpawnedVehicle } from '@/lib/routing'
@@ -174,15 +176,16 @@ export function AmbulanceMap({
 
     const tripsToShow = showAllTrips ? trips : selectedTrip ? [selectedTrip] : []
     const focusTrip = selectedTrip ?? null
+    const currentTripIds = new Set(tripsToShow.map((t) => t.id))
 
-    const createAmbulanceIcon = (isActive: boolean) =>
+    const createAmbulanceIcon = (isAssigned: boolean) =>
       L.divIcon({
         className: 'custom-ambulance-icon',
         html: `
           <div style="position: relative;">
-            <div class="${isActive ? 'map-marker-pulse' : ''}" style="width: 34px; height: 34px; border-radius: 50%; display: flex; align-items: center; justify-content: center; background-color: ${
-              isActive ? '#ef4444' : '#3b82f6'
-            }; box-shadow: 0 0 16px ${isActive ? 'rgba(239,68,68,0.55)' : 'rgba(59,130,246,0.35)'}, 0 4px 6px rgba(0,0,0,0.3);">
+            <div class="${isAssigned ? 'map-marker-pulse' : ''}" style="width: 34px; height: 34px; border-radius: 50%; display: flex; align-items: center; justify-content: center; background-color: ${
+              isAssigned ? '#ef4444' : '#2563eb'
+            }; border: 2px solid white; box-shadow: 0 0 16px ${isAssigned ? 'rgba(239,68,68,0.65)' : 'rgba(37,99,235,0.45)'}, 0 4px 6px rgba(0,0,0,0.3);">
               <svg xmlns="http://www.w3.org/2000/svg" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="white" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
                 <path d="M10 10H6"></path>
                 <path d="M14 18V6a2 2 0 0 0-2-2H4a2 2 0 0 0-2 2v11a1 1 0 0 0 1 1h2"></path>
@@ -246,7 +249,16 @@ export function AmbulanceMap({
     }
 
     tripsToShow.forEach((trip) => {
-      const isActive = trip.status === 'pending' || trip.status === 'in_progress'
+      const routeData = (trip.route_data as Record<string, unknown> | null) ?? {}
+      const rawWorkflow = typeof routeData.status === 'string' ? routeData.status : undefined
+
+      const isAvailable =
+        rawWorkflow === 'Available' ||
+        trip.status === 'completed' ||
+        trip.status === 'available' ||
+        routeData.status === 'Available'
+
+      const isAssigned = !isAvailable && (trip.status === 'in_progress' || trip.status === 'pending')
       const isFocused = focusTrip?.id === trip.id
 
       const currentPosition =
@@ -265,13 +277,13 @@ export function AmbulanceMap({
         
         if (!marker) {
           marker = L.marker(currentPosition, {
-            icon: createAmbulanceIcon(isActive),
+            icon: createAmbulanceIcon(isAssigned),
             opacity: focusTrip && !isFocused ? 0.55 : 1,
           }).bindPopup(`
               <div style="font-size: 14px; padding: 4px;">
                 <strong>${trip.ambulance_id}</strong><br/>
                 ${trip.source}${trip.destination ? ` → ${trip.destination}` : ''}<br/>
-                Status: ${trip.status}<br/>
+                Status: ${isAssigned ? 'ASSIGNED' : 'AVAILABLE'}<br/>
                 ${trip.eta ? `ETA: ${trip.eta} min` : ''}
               </div>
             `)
@@ -283,6 +295,7 @@ export function AmbulanceMap({
           markersRef.current?.addLayer(marker)
           ambulanceMarkersRef.current.set(trip.id, marker)
         } else {
+          marker.setIcon(createAmbulanceIcon(isAssigned))
           // Smooth GPS-like movement animation using custom interpolation
           if (previousPosition) {
             const [prevLat, prevLng] = previousPosition
@@ -318,21 +331,12 @@ export function AmbulanceMap({
           }
           
           // Update icon and opacity based on current state
-          marker.setIcon(createAmbulanceIcon(isActive))
+          marker.setIcon(createAmbulanceIcon(isAssigned))
           marker.setOpacity(focusTrip && !isFocused ? 0.55 : 1)
+          markersRef.current?.addLayer(marker)
         }
         
         previousPositionsRef.current.set(trip.id, currentPosition)
-      }
-      
-      // Clean up markers for trips that no longer exist
-      const currentTripIds = new Set(tripsToShow.map(t => t.id))
-      for (const [tripId, marker] of ambulanceMarkersRef.current) {
-        if (!currentTripIds.has(tripId)) {
-          markersRef.current?.removeLayer(marker)
-          ambulanceMarkersRef.current.delete(tripId)
-          previousPositionsRef.current.delete(tripId)
-        }
       }
 
       if (isFocused) {
