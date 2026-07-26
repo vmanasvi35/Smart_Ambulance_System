@@ -1,7 +1,7 @@
 import type { SupabaseClient } from '@supabase/supabase-js'
 
 export type TripNotificationPayload = {
-  event_type: 'dispatch_assigned' | 'driver_accepted'
+  event_type: 'dispatch_assigned' | 'driver_accepted' | 'patient_onboard' | 'trip_completed'
   driver_id?: string | null
   pickup: string
   destination: string
@@ -24,7 +24,11 @@ export async function broadcastTripNotification(
       title:
         payload.event_type === 'dispatch_assigned'
           ? 'New Dispatch Assignment'
-          : 'Driver Accepted Assignment',
+          : payload.event_type === 'driver_accepted'
+            ? 'Driver Accepted Assignment'
+            : payload.event_type === 'patient_onboard'
+              ? 'Patient Onboard'
+              : 'Trip Completed',
       message: `${payload.pickup} → ${payload.destination}`,
       payload: {
         ambulanceId: payload.ambulanceId,

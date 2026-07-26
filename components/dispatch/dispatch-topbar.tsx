@@ -14,9 +14,10 @@ import { Button } from '@/components/ui/button'
 
 interface DispatchTopbarProps {
   pendingCount: number
+  dispatcherName?: string
 }
 
-export function DispatchTopbar({ pendingCount }: DispatchTopbarProps) {
+export function DispatchTopbar({ pendingCount, dispatcherName }: DispatchTopbarProps) {
   const [time, setTime] = useState<string>('')
   const [isOnline, setIsOnline] = useState(true)
 
@@ -44,28 +45,36 @@ export function DispatchTopbar({ pendingCount }: DispatchTopbarProps) {
         <div className="flex items-center gap-2 rounded-xl bg-white/5 border border-white/10 px-3 py-1.5 text-xs font-semibold text-muted-foreground">
           {isOnline ? (
             <>
-              <Wifi className="h-4.5 w-4.5 text-green-500 animate-pulse" />
-              <span className="text-green-400">TELEMETRY LINKED</span>
+              <Wifi className="h-3.5 w-3.5 text-emerald-400" />
+              <span>Telemetry Connected</span>
             </>
           ) : (
             <>
-              <WifiOff className="h-4.5 w-4.5 text-red-500" />
-              <span className="text-red-400">OFFLINE</span>
+              <WifiOff className="h-3.5 w-3.5 text-red-400" />
+              <span>Offline Mode</span>
             </>
           )}
         </div>
 
-        {/* Live Clock */}
-        <div className="hidden md:flex items-center gap-2 rounded-xl bg-white/5 border border-white/10 px-3 py-1.5 text-xs font-mono text-muted-foreground">
-          <Clock className="h-4 w-4 text-emerald-500" />
+        <div className="h-5 w-px bg-white/10" />
+
+        {/* System Time */}
+        <div className="flex items-center gap-2 rounded-xl bg-white/5 border border-white/10 px-3 py-1.5 text-xs font-mono font-semibold text-muted-foreground">
+          <Clock className="h-3.5 w-3.5" />
           <span>{time}</span>
         </div>
 
-        {/* Notifications */}
+        <div className="h-5 w-px bg-white/10" />
+
+        {/* Notifications dropdown */}
         <DropdownMenu>
           <DropdownMenuTrigger asChild>
-            <Button variant="ghost" size="icon" className="relative rounded-xl border border-white/10 bg-white/5 hover:bg-white/10">
-              <Bell className="h-5 w-5 text-muted-foreground" />
+            <Button
+              variant="ghost"
+              size="icon"
+              className="relative h-9 w-9 rounded-xl border border-white/10 bg-white/5 text-muted-foreground hover:bg-white/10 hover:text-foreground"
+            >
+              <Bell className="h-4 w-4" />
               {pendingCount > 0 && (
                 <span className="absolute -right-1 -top-1 flex h-4.5 w-4.5 items-center justify-center rounded-full bg-emergency text-[9px] font-extrabold text-white ring-2 ring-[#07111f]">
                   {pendingCount}
@@ -98,7 +107,7 @@ export function DispatchTopbar({ pendingCount }: DispatchTopbarProps) {
             <User className="h-5 w-5" />
           </div>
           <div className="hidden lg:block text-left">
-            <div className="text-xs font-bold text-foreground">C. Reynolds</div>
+            <div className="text-xs font-bold text-foreground">{dispatcherName || 'C. Reynolds'}</div>
             <div className="text-[9px] font-bold text-muted-foreground uppercase tracking-wider">Shift Chief</div>
           </div>
         </div>

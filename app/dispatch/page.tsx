@@ -9,7 +9,7 @@ import { DispatchAmbulanceList, Ambulance, isAmbulanceAvailable } from '@/compon
 import { DispatchEmergencyQueue, EmergencyRequest } from '@/components/dispatch/dispatch-emergency-queue'
 import { DispatchActivityTimeline, ActivityLog } from '@/components/dispatch/dispatch-activity-timeline'
 import { AmbulanceMap } from '@/components/ambulance-map'
-import { calculateSmartRoute, findNearestHospital } from '@/lib/routing'
+import { calculateSmartRoute, findNearestHospital, calculateDistance } from '@/lib/routing'
 import { createClient } from '@/lib/supabase/client'
 import { BANGALORE_LOCATIONS, HOSPITALS, AmbulanceTrip } from '@/lib/types'
 import {
@@ -29,6 +29,12 @@ import {
   GPS_REFRESH_INTERVALS,
   type GpsRefreshInterval,
 } from '@/lib/dispatch-settings'
+
+const MAPPED_HOSPITALS = HOSPITALS.map((hospital) => ({
+  name: hospital.name,
+  lat: hospital.lat,
+  lng: hospital.lng,
+}))
 
 export default function DispatchDashboard() {
   const [activeSection, setActiveSection] = useState('control-room')
@@ -52,6 +58,10 @@ export default function DispatchDashboard() {
   const [isCreatingEmergency, setIsCreatingEmergency] = useState(false)
   const [createError, setCreateError] = useState<string | null>(null)
   const [assignError, setAssignError] = useState<string | null>(null)
+  const [ambulanceEtas, setAmbulanceEtas] = useState<Record<string, number>>({})
+  const [incidents, setIncidents] = useState<any[]>([])
+  const [currentUserProfile, setCurrentUserProfile] = useState<any>(null)
+  const [autoAssignEnabled, setAutoAssignEnabled] = useState(true)
 
   const supabase = createClient()
 
@@ -61,6 +71,19 @@ export default function DispatchDashboard() {
 
   // Load drivers & active trips from Supabase
   const loadData = useCallback(async () => {
+    // Load current user profile (dispatcher)
+    const { data: { user } } = await supabase.auth.getUser()
+    if (user) {
+      const { data: profile } = await supabase
+        .from('profiles')
+        .select('*')
+        .eq('id', user.id)
+        .maybeSingle()
+      if (profile) {
+        setCurrentUserProfile(profile)
+      }
+    }
+
     // Load registered driver profiles (authenticated drivers only)
     const { data: profilesData } = await supabase
       .from('profiles')
@@ -216,6 +239,33 @@ export default function DispatchDashboard() {
       setEmergencies(normalizedEmergencies)
     } else {
       setEmergencies([])
+    }
+
+    const { data: incidentRows } = await supabase
+      .from('emergency_requests')
+      .select(`
+        id,
+        incident_id,
+        pickup_location,
+        destination_hospital,
+        status,
+        created_at,
+        updated_at,
+        assigned_trip_id,
+        trip:ambulance_trips(
+          id,
+          ambulance_id,
+          status,
+          updated_at
+        )
+      `)
+      .neq('status', 'pending')
+      .order('created_at', { ascending: false })
+
+    if (incidentRows) {
+      setIncidents(incidentRows)
+    } else {
+      setIncidents([])
     }
 
     setLoading(false)
@@ -416,10 +466,10 @@ export default function DispatchDashboard() {
         prev.map((emergency) =>
           emergency.id === emergencyId
             ? {
-                ...emergency,
-                status: 'assigned',
-                assignedAmbulanceId: selectedAmb.id,
-              }
+              ...emergency,
+              status: 'assigned',
+              assignedAmbulanceId: selectedAmb.id,
+            }
             : emergency,
         ),
       )
@@ -513,6 +563,101 @@ export default function DispatchDashboard() {
       }
 
       if (inserted) {
+        const available = ambulances.filter(isAmbulanceAvailable)
+        const isAutoAssigned = autoAssignEnabled && available.length > 0
+
+        if (isAutoAssigned) {
+          let nearestAmb = available[0]
+          let minDistance = calculateDistance(
+            nearestAmb.lat,
+            nearestAmb.lng,
+            pickup.lat,
+            pickup.lng
+          )
+
+          for (let i = 1; i < available.length; i++) {
+            const amb = available[i]
+            const dist = calculateDistance(
+              amb.lat,
+              amb.lng,
+              pickup.lat,
+              pickup.lng
+            )
+            if (dist < minDistance) {
+              minDistance = dist
+              nearestAmb = amb
+            }
+          }
+
+          const { data: profile } = await supabase
+            .from('profiles')
+            .select('id')
+            .eq('full_name', nearestAmb.driverName)
+            .eq('role', 'driver')
+            .maybeSingle()
+
+          if (profile?.id) {
+            const routeRes = await calculateSmartRoute({
+              source: [nearestAmb.lat, nearestAmb.lng],
+              destination: [hospital.lat, hospital.lng],
+              trafficLevel: 'medium',
+            })
+
+            const { data: insertedTrip } = await supabase
+              .from('ambulance_trips')
+              .insert({
+                driver_id: profile.id,
+                ambulance_id: nearestAmb.id,
+                emergency_id: inserted.id,
+                source: pickup.name,
+                destination: hospital.name,
+                source_lat: pickup.lat,
+                source_lng: pickup.lng,
+                dest_lat: hospital.lat,
+                dest_lng: hospital.lng,
+                current_lat: nearestAmb.lat,
+                current_lng: nearestAmb.lng,
+                status: 'pending',
+                eta: routeRes.estimatedTime,
+                distance: routeRes.totalDistance,
+                route_condition: 'clear',
+                route_data: {
+                  ...routeRes,
+                  status: TRIP_WORKFLOW_STATUS.assigned,
+                  priority,
+                  patientName: inserted.patient_name,
+                  patientNotes: inserted.notes,
+                  patientAge: inserted.age,
+                  emergencyType: inserted.emergency_type,
+                } as any,
+              })
+              .select()
+              .single()
+
+            if (insertedTrip) {
+              await supabase
+                .from('emergency_requests')
+                .update({
+                  status: 'assigned',
+                  assigned_trip_id: insertedTrip.id,
+                  updated_at: new Date().toISOString(),
+                })
+                .eq('id', inserted.id)
+
+              await broadcastTripNotification(supabase, {
+                event_type: 'dispatch_assigned',
+                driver_id: profile.id,
+                pickup: pickup.name,
+                destination: hospital.name,
+                priority,
+                ambulanceId: nearestAmb.id,
+                eta: routeRes.estimatedTime,
+                trip_id: insertedTrip.id,
+              })
+            }
+          }
+        }
+
         setEmergencies((prev) => [
           {
             id: String(inserted.id),
@@ -525,7 +670,7 @@ export default function DispatchDashboard() {
             destLng: Number(inserted.dest_lng ?? hospital.lng),
             priority: (inserted.priority ?? priority) as EmergencyRequest['priority'],
             timeAgo: 'Just now',
-            status: 'pending',
+            status: isAutoAssigned ? 'assigned' : 'pending',
             patientName: inserted.patient_name ?? template.patientName,
             age: inserted.age ?? template.age,
             emergencyType: inserted.emergency_type ?? template.emergencyType,
@@ -553,6 +698,59 @@ export default function DispatchDashboard() {
     setAssigningEmergency(emergency)
     setSelectedTrip(null)
     setActiveSection('control-room')
+    setAmbulanceEtas({})
+
+    // Calculate ETAs for each available ambulance to the pickup location asynchronously
+    const activeAvailable = ambulances.filter(isAmbulanceAvailable)
+    Promise.all(
+      activeAvailable.map(async (amb) => {
+        try {
+          const route = await calculateSmartRoute({
+            source: [amb.lat, amb.lng],
+            destination: [emergency.pickupLat, emergency.pickupLng],
+            trafficLevel: emergency.priority === 'critical' ? 'high' : 'medium',
+          })
+          setAmbulanceEtas((prev) => ({
+            ...prev,
+            [amb.id]: route.estimatedTime,
+          }))
+        } catch (e) {
+          console.error(`Error calculating route for ${amb.id}`, e)
+        }
+      })
+    )
+
+    // Set an initial preview trip immediately with straight-line waypoints to prevent map reset glitch
+    setAssignmentPreviewTrip({
+      id: `assign-preview-${emergency.id}`,
+      ambulance_id: 'PENDING-ASSIGN',
+      driver_id: 'pending',
+      source: emergency.pickupLocation,
+      destination: emergency.destinationHospital,
+      source_lat: emergency.pickupLat,
+      source_lng: emergency.pickupLng,
+      dest_lat: emergency.destLat,
+      dest_lng: emergency.destLng,
+      current_lat: emergency.pickupLat,
+      current_lng: emergency.pickupLng,
+      eta: emergency.eta ?? 0,
+      distance: emergency.distance ?? 0,
+      status: 'pending',
+      route_condition: 'clear',
+      route_data: {
+        waypoints: [
+          [emergency.pickupLat, emergency.pickupLng],
+          [emergency.destLat, emergency.destLng],
+        ],
+        estimatedTime: emergency.eta ?? 0,
+        totalDistance: emergency.distance ?? 0,
+        status: TRIP_WORKFLOW_STATUS.assigned,
+        priority: emergency.priority,
+      } as any,
+      is_offline: false,
+      created_at: emergency.createdAt ?? new Date().toISOString(),
+      updated_at: new Date().toISOString(),
+    })
 
     const route = await calculateSmartRoute({
       source: [emergency.pickupLat, emergency.pickupLng],
@@ -580,7 +778,7 @@ export default function DispatchDashboard() {
         ...route,
         status: TRIP_WORKFLOW_STATUS.assigned,
         priority: emergency.priority,
-      },
+      } as any,
       is_offline: false,
       created_at: emergency.createdAt ?? new Date().toISOString(),
       updated_at: new Date().toISOString(),
@@ -626,11 +824,11 @@ export default function DispatchDashboard() {
   return (
     <div className="flex min-h-screen bg-[#060e1a] text-foreground">
       {/* Sidebar navigation */}
-      <DispatchSidebar activeSection={activeSection} onSectionChange={setActiveSection} />
+      <DispatchSidebar activeSection={activeSection} onSectionChange={setActiveSection} dispatcherName={currentUserProfile?.full_name} />
 
       {/* Main page content area */}
       <div className="flex-1 flex flex-col min-w-0">
-        <DispatchTopbar pendingCount={pendingCount} />
+        <DispatchTopbar pendingCount={pendingCount} dispatcherName={currentUserProfile?.full_name} />
 
         <main className="relative flex-1 overflow-auto p-4 md:p-6 space-y-6">
           {/* Subtle glowing elements */}
@@ -674,11 +872,7 @@ export default function DispatchDashboard() {
                         <AmbulanceMap
                           trips={trips}
                           selectedTrip={mapFocusedTrip}
-                          hospitals={HOSPITALS.map((hospital) => ({
-                            name: hospital.name,
-                            lat: hospital.lat,
-                            lng: hospital.lng,
-                          }))}
+                          hospitals={MAPPED_HOSPITALS}
                           showAllTrips
                           onTripSelect={(trip) => {
                             if (assigningEmergency) return
@@ -840,8 +1034,8 @@ export default function DispatchDashboard() {
             {activeSection === 'incidents' && (
               <div className="glass-card rounded-2xl border border-white/10 bg-[#07111f]/60 p-6 space-y-6 shadow-lg max-w-4xl">
                 <div>
-                  <h2 className="text-xl font-bold text-foreground tracking-wide">Historical Incident log</h2>
-                  <p className="text-xs text-muted-foreground mt-1">Detailed review of all dispatched and resolved incidents in this shift.</p>
+                  <h2 className="text-xl font-bold text-foreground tracking-wide">Incident log</h2>
+                  <p className="text-xs text-muted-foreground mt-1">Detailed review of all dispatched (in-progress) and resolved (completed) incidents in this shift.</p>
                 </div>
 
                 <div className="overflow-x-auto rounded-xl border border-white/10 bg-white/[0.01]">
@@ -853,28 +1047,53 @@ export default function DispatchDashboard() {
                         <th className="p-3">Hospital</th>
                         <th className="p-3">Ambulance</th>
                         <th className="p-3">Status</th>
-                        <th className="p-3 text-right">Resolved At</th>
+                        <th className="p-3 text-right">Time</th>
                       </tr>
                     </thead>
                     <tbody>
-                      {[
-                        { id: 'REQ-498', pickup: 'Indiranagar', hospital: 'Columbia Asia', unit: 'AMB-103', status: 'Resolved', time: '22:45' },
-                        { id: 'REQ-497', pickup: 'HSR Layout', hospital: 'Narayana Health', unit: 'AMB-106', status: 'Resolved', time: '22:12' },
-                        { id: 'REQ-496', pickup: 'Koramangala', hospital: 'Manipal Hospital', unit: 'AMB-101', status: 'Resolved', time: '21:30' },
-                      ].map((item, idx) => (
-                        <tr key={idx} className="border-b border-white/5 hover:bg-white/5 text-slate-300">
-                          <td className="p-3 font-mono font-bold text-slate-400">{item.id}</td>
-                          <td className="p-3">{item.pickup}</td>
-                          <td className="p-3">{item.hospital}</td>
-                          <td className="p-3 font-mono">{item.unit}</td>
-                          <td className="p-3">
-                            <span className="bg-emerald-500/10 text-emerald-400 border border-emerald-500/20 px-2 py-0.5 rounded text-[10px] font-bold">
-                              {item.status}
-                            </span>
+                      {incidents.map((item) => {
+                        const statusLabel =
+                          item.status === 'completed'
+                            ? 'Resolved'
+                            : item.status === 'assigned'
+                              ? 'In Progress'
+                              : item.status === 'cancelled'
+                                ? 'Cancelled'
+                                : item.status
+
+                        const badgeClass =
+                          item.status === 'completed'
+                            ? 'bg-emerald-500/10 text-emerald-400 border border-emerald-500/20'
+                            : item.status === 'assigned'
+                              ? 'bg-amber-500/10 text-amber-400 border border-amber-500/20'
+                              : 'bg-red-500/10 text-red-400 border border-red-500/20'
+
+                        return (
+                          <tr key={item.id} className="border-b border-white/5 hover:bg-white/5 text-slate-300">
+                            <td className="p-3 font-mono font-bold text-slate-400">
+                              {item.incident_id ?? `REQ-${item.id.substring(0, 4).toUpperCase()}`}
+                            </td>
+                            <td className="p-3">{item.pickup_location}</td>
+                            <td className="p-3">{item.destination_hospital}</td>
+                            <td className="p-3 font-mono">{(item.trip as any)?.ambulance_id ?? '—'}</td>
+                            <td className="p-3">
+                              <span className={`px-2 py-0.5 rounded text-[10px] font-bold ${badgeClass}`}>
+                                {statusLabel}
+                              </span>
+                            </td>
+                            <td className="p-3 text-right text-muted-foreground font-mono">
+                              {formatActivityClock(item.updated_at || item.created_at)}
+                            </td>
+                          </tr>
+                        )
+                      })}
+                      {incidents.length === 0 && (
+                        <tr>
+                          <td colSpan={6} className="py-6 text-center text-xs text-muted-foreground">
+                            No logged incidents found in this shift.
                           </td>
-                          <td className="p-3 text-right text-muted-foreground font-mono">{item.time}</td>
                         </tr>
-                      ))}
+                      )}
                     </tbody>
                   </table>
                 </div>
@@ -894,8 +1113,12 @@ export default function DispatchDashboard() {
                       <div className="text-xs font-bold text-foreground">Auto-Assign Nearest Unit</div>
                       <div className="text-[10px] text-muted-foreground mt-0.5">Use algorithm to assign nearest ambulance to incident.</div>
                     </div>
-                    <div className="h-6 w-11 rounded-full bg-white/15 p-1 cursor-pointer flex items-center justify-end">
-                      <div className="h-4 w-4 rounded-full bg-red-500" />
+                    <div
+                      onClick={() => setAutoAssignEnabled(!autoAssignEnabled)}
+                      className={`h-6 w-11 rounded-full p-1 cursor-pointer flex items-center transition-colors duration-200 ${autoAssignEnabled ? 'bg-emerald-500/25 justify-end border border-emerald-500/30' : 'bg-white/10 justify-start border border-white/5'
+                        }`}
+                    >
+                      <div className={`h-4 w-4 rounded-full transition-transform duration-200 ${autoAssignEnabled ? 'bg-emerald-400 animate-pulse' : 'bg-slate-400'}`} />
                     </div>
                   </div>
 
@@ -980,15 +1203,21 @@ export default function DispatchDashboard() {
                       onClick={() => {
                         if (!isAssigning) handleAssign(amb.driverName)
                       }}
-                      className={`flex items-center justify-between p-2.5 bg-white/[0.02] border border-white/5 rounded-lg transition-all duration-150 ${
-                        isAssigning
+                      className={`flex items-center justify-between p-2.5 bg-white/[0.02] border border-white/5 rounded-lg transition-all duration-150 ${isAssigning
                           ? 'cursor-not-allowed opacity-60'
                           : 'hover:bg-emerald-500/10 hover:border-emerald-500/30 cursor-pointer'
-                      }`}
+                        }`}
                     >
                       <div>
                         <div className="font-mono text-xs font-bold text-foreground">{amb.id}</div>
-                        <div className="text-[10px] text-muted-foreground">{amb.driverName} • {amb.locationName}</div>
+                        <div className="text-[10px] text-muted-foreground">
+                          {amb.driverName} • {amb.locationName}
+                          {ambulanceEtas[amb.id] !== undefined && (
+                            <span className="ml-1 text-emerald-400 font-bold">
+                              • ETA: {ambulanceEtas[amb.id]}m to pickup
+                            </span>
+                          )}
+                        </div>
                       </div>
                       <span className="text-[10px] font-bold text-emerald-400 bg-emerald-500/10 border border-emerald-500/20 px-2 py-0.5 rounded">
                         {isAssigning ? 'Assigning…' : 'Dispatch'}

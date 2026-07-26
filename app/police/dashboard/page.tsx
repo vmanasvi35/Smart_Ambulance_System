@@ -101,10 +101,13 @@ export default function PoliceControlRoom() {
   }, [])
 
   const loadActivityLogs = useCallback(async () => {
-    const rows = await fetchRecentActivity(supabase, 12)
+    const rows = await fetchRecentActivity(supabase, 30)
     if (rows.length === 0) return
+    const filteredRows = rows.filter(
+      (row) => !row.event_type.startsWith('dispatch')
+    )
     setActivity(
-      rows.map((row) => ({
+      filteredRows.slice(0, 12).map((row) => ({
         id: row.id,
         time: formatClock(row.created_at),
         text: row.message,
@@ -214,42 +217,7 @@ export default function PoliceControlRoom() {
     }
   }, [loadActivityLogs, loadData, supabase])
 
-  const handleStartClearing = async (trip: AmbulanceTrip) => {
-    setBusyTripId(trip.id)
-    const routeData = (trip.route_data as Record<string, unknown> | null) ?? {}
-
-    await supabase
-      .from('ambulance_trips')
-      .update({
-        route_condition: trip.route_condition || 'heavy_congestion',
-        route_data: {
-          ...routeData,
-          clearanceStatus: 'clearing' as ClearanceStatus,
-          routeState: 'WAITING_FOR_POLICE_RESPONSE' as RouteState,
-          policeDecision: 'CLEAR_ROUTE' as PoliceDecision,
-          policeDecisionAt: new Date().toISOString(),
-          policeMessage: 'Police has begun clearing the emergency corridor.',
-        },
-        updated_at: new Date().toISOString(),
-      })
-      .eq('id', trip.id)
-
-    // Move related alerts to waiting/acknowledged
-    await supabase
-      .from('police_alerts')
-      .update({
-        alert_status: 'acknowledged',
-        updated_at: new Date().toISOString(),
-      })
-      .eq('trip_id', trip.id)
-      .eq('alert_status', 'pending')
-
-    pushActivity(`Traffic clearing started for ${trip.ambulance_id}`, 'warning')
-    await loadData()
-    setBusyTripId(null)
-  }
-
-  const handleMarkCleared = async (trip: AmbulanceTrip) => {
+  const handleRoadCleared = async (trip: AmbulanceTrip) => {
     setBusyTripId(trip.id)
     const routeData = (trip.route_data as Record<string, unknown> | null) ?? {}
 
@@ -263,7 +231,7 @@ export default function PoliceControlRoom() {
           routeState: 'CLEARED' as RouteState,
           policeDecision: 'CLEAR_ROUTE' as PoliceDecision,
           policeDecisionAt: new Date().toISOString(),
-          policeMessage: 'Police marked the corridor cleared for the ambulance.',
+          policeMessage: 'Road cleared. Ambulance may continue on current route.',
         },
         updated_at: new Date().toISOString(),
       })
@@ -281,17 +249,106 @@ export default function PoliceControlRoom() {
           .from('police_alerts')
           .update({
             alert_status: 'resolved',
-            message: `${alert.message ?? ''} Decision: Cleared by police coordinator.`,
+            message: `${alert.message ?? ''} Decision: Road cleared by police.`,
             updated_at: new Date().toISOString(),
           })
           .eq('id', alert.id)
       }
     }
 
-    pushActivity(`Traffic cleared for ${trip.ambulance_id}`, 'success')
+    pushActivity(`Road cleared for ${trip.ambulance_id}`, 'success')
     await loadData()
     setBusyTripId(null)
   }
+
+  const handleTrafficManaged = async (trip: AmbulanceTrip) => {
+    setBusyTripId(trip.id)
+    const routeData = (trip.route_data as Record<string, unknown> | null) ?? {}
+
+    await supabase
+      .from('ambulance_trips')
+      .update({
+        route_condition: 'moderate_traffic',
+        route_data: {
+          ...routeData,
+          clearanceStatus: 'cleared' as ClearanceStatus,
+          routeState: 'CLEARED' as RouteState,
+          policeDecision: 'TRAFFIC_MANAGED' as PoliceDecision,
+          policeDecisionAt: new Date().toISOString(),
+          policeMessage: 'Traffic managed. Ambulance may continue on current route.',
+        },
+        updated_at: new Date().toISOString(),
+      })
+      .eq('id', trip.id)
+
+    const { data: activeAlerts } = await supabase
+      .from('police_alerts')
+      .select('id, message')
+      .eq('trip_id', trip.id)
+      .in('alert_status', ['pending', 'acknowledged'])
+
+    if (activeAlerts) {
+      for (const alert of activeAlerts) {
+        await supabase
+          .from('police_alerts')
+          .update({
+            alert_status: 'resolved',
+            message: `${alert.message ?? ''} Decision: Traffic managed by police.`,
+            updated_at: new Date().toISOString(),
+          })
+          .eq('id', alert.id)
+      }
+    }
+
+    pushActivity(`Traffic managed for ${trip.ambulance_id}`, 'success')
+    await loadData()
+    setBusyTripId(null)
+  }
+
+  const handleRequestReroute = async (trip: AmbulanceTrip) => {
+    setBusyTripId(trip.id)
+    const routeData = (trip.route_data as Record<string, unknown> | null) ?? {}
+
+    await supabase
+      .from('ambulance_trips')
+      .update({
+        route_condition: 'road_blocked',
+        route_data: {
+          ...routeData,
+          clearanceStatus: 'pending' as ClearanceStatus,
+          routeState: 'WAITING_FOR_POLICE_RESPONSE' as RouteState,
+          policeDecision: 'REROUTE_REQUIRED' as PoliceDecision,
+          policeDecisionAt: new Date().toISOString(),
+          policeMessage: 'Reroute requested. Driver dashboard will automatically calculate new route.',
+        },
+        updated_at: new Date().toISOString(),
+      })
+      .eq('id', trip.id)
+
+    const { data: activeAlerts } = await supabase
+      .from('police_alerts')
+      .select('id, message')
+      .eq('trip_id', trip.id)
+      .in('alert_status', ['pending', 'acknowledged'])
+
+    if (activeAlerts) {
+      for (const alert of activeAlerts) {
+        await supabase
+          .from('police_alerts')
+          .update({
+            alert_status: 'acknowledged',
+            message: `${alert.message ?? ''} Decision: Reroute requested by police.`,
+            updated_at: new Date().toISOString(),
+          })
+          .eq('id', alert.id)
+      }
+    }
+
+    pushActivity(`Reroute requested for ${trip.ambulance_id}`, 'warning')
+    await loadData()
+    setBusyTripId(null)
+  }
+
 
   const emergencyTrips = useMemo(
     () => trips.filter((trip) => needsPoliceAttention(trip)),
@@ -346,7 +403,7 @@ export default function PoliceControlRoom() {
             </div>
             <h1 className="text-xl font-semibold text-foreground">Police Dashboard</h1>
             <p className="text-sm text-muted-foreground">
-              Receive alerts → Locate ambulance → Clear traffic → Mark route cleared
+              Receive alerts → Road Cleared / Traffic Managed / Request Reroute
             </p>
           </div>
           <span className="inline-flex items-center gap-2 rounded-lg border border-emergency/30 bg-emergency/10 px-3 py-1.5 text-sm text-emergency">
@@ -397,56 +454,73 @@ export default function PoliceControlRoom() {
           />
         </div>
 
-        {/* 2. Large live map */}
-        <Card className="glass-card overflow-hidden border-white/10">
-          <CardHeader className="flex flex-row items-center justify-between gap-3 border-b border-white/10 py-3">
-            <div>
+        {/* 2. Map + Recent Activity Grid */}
+        <div className="grid gap-6 xl:grid-cols-[1.4fr_0.8fr]">
+          {/* Map Card */}
+          <Card className="glass-card overflow-hidden border-white/10 flex flex-col h-[520px]">
+            <CardHeader className="flex flex-row items-center justify-between gap-3 border-b border-white/10 py-3 shrink-0">
               <CardTitle className="flex items-center gap-2 text-base">
                 <Navigation className="h-4 w-4 text-primary" />
                 Live Tracking Map
               </CardTitle>
-              <CardDescription>
-                {selectedTrip
-                  ? `${selectedTrip.ambulance_id} · ETA ${selectedTrip.eta != null ? `${selectedTrip.eta} min` : '—'} · ${clearanceLabel(getClearanceStatus(selectedTrip))}`
-                  : 'Select an alert to focus its route'}
-              </CardDescription>
-            </div>
-            {selectedTrip && (
-              <Button size="sm" variant="outline" onClick={() => setSelectedTrip(null)}>
-                Show All
-              </Button>
-            )}
-          </CardHeader>
-          <CardContent className="p-3 sm:p-4">
-            <div className="mb-3 flex flex-wrap gap-2 text-[11px] text-muted-foreground">
-              <MapChip label="Ambulance" />
-              <MapChip label="Pickup" />
-              <MapChip label="Hospital" />
-              <MapChip
-                label={
-                  selectedTrip
-                    ? `Clearance: ${clearanceLabel(getClearanceStatus(selectedTrip))}`
-                    : 'Clearance status'
-                }
-              />
               {selectedTrip && (
-                <MapChip
-                  label={`Route state: ${String(selectedRouteData?.routeState ?? selectedTrip.route_condition)}`}
-                />
+                <Button size="sm" variant="outline" onClick={() => setSelectedTrip(null)}>
+                  Show All
+                </Button>
               )}
-            </div>
-            <AmbulanceMap
-              trips={trips}
-              selectedTrip={selectedTrip}
-              onTripSelect={setSelectedTrip}
-              showAllTrips={!selectedTrip}
-              className="h-[420px] rounded-xl border border-white/10 sm:h-[520px]"
-            />
-          </CardContent>
-        </Card>
+            </CardHeader>
+            <CardContent className="p-3 sm:p-4 flex-1 min-h-0">
+              <AmbulanceMap
+                trips={trips}
+                selectedTrip={selectedTrip}
+                onTripSelect={setSelectedTrip}
+                showAllTrips={!selectedTrip}
+                className="h-full w-full"
+              />
+            </CardContent>
+          </Card>
 
-        {/* 3. Active Emergency Alerts + Recent Activity */}
-        <div className="grid gap-6 xl:grid-cols-[1.4fr_0.8fr]">
+          {/* Recent Activity Card */}
+          <Card className="glass-card border-white/10 flex flex-col h-[520px] overflow-hidden">
+            <CardHeader className="border-b border-white/10 py-3 shrink-0">
+              <CardTitle className="text-base">Recent Activity</CardTitle>
+            </CardHeader>
+            <CardContent className="p-4 flex-1 overflow-y-auto">
+              {activity.length === 0 ? (
+                <div className="rounded-xl border border-dashed border-white/10 bg-white/[0.02] px-4 py-8 text-center text-xs text-muted-foreground">
+                  Waiting for dispatch, acceptance, and clearance events.
+                </div>
+              ) : (
+                <ol className="space-y-3">
+                  {activity.map((item) => (
+                    <li
+                      key={item.id}
+                      className="flex gap-3 rounded-lg border border-white/5 bg-white/[0.02] px-3 py-2.5"
+                    >
+                      <span className="mt-0.5 font-mono text-[10px] text-muted-foreground">
+                        {item.time}
+                      </span>
+                      <span
+                        className={cn(
+                          'text-xs font-medium',
+                          item.tone === 'success' && 'text-success',
+                          item.tone === 'warning' && 'text-warning',
+                          item.tone === 'emergency' && 'text-emergency',
+                          item.tone === 'info' && 'text-foreground',
+                        )}
+                      >
+                        {item.text}
+                      </span>
+                    </li>
+                  ))}
+                </ol>
+              )}
+            </CardContent>
+          </Card>
+        </div>
+
+        {/* 3. Active Emergency Alerts */}
+        <div className="mt-6">
           <Card className="glass-card border-white/10">
             <CardHeader className="border-b border-white/10 py-3">
               <CardTitle className="text-base">Active Emergency Alerts</CardTitle>
@@ -478,24 +552,21 @@ export default function PoliceControlRoom() {
                         layout
                         initial={{ opacity: 0, y: 10 }}
                         animate={{ opacity: 1, y: 0 }}
-                        exit={{ opacity: 0, y: -8 }}
+                        exit={{ opacity: 0, y: -10 }}
+                        transition={{ type: 'spring', stiffness: 500, damping: 40 }}
                         className={cn(
-                          'rounded-xl border p-4 transition-colors',
+                          'rounded-xl border p-4 text-left transition-all duration-200 block w-full',
                           isSelected
-                            ? 'border-primary/40 bg-primary/5'
-                            : 'border-white/10 bg-white/[0.03] hover:border-white/20',
+                            ? 'bg-primary/10 border-primary/45 shadow-[0_0_20px_rgba(59,130,246,0.15)]'
+                            : 'bg-white/[0.02] border-white/5 hover:bg-white/[0.05] hover:border-white/10',
                         )}
                       >
                         <button
-                          type="button"
-                          className="w-full text-left"
                           onClick={() => setSelectedTrip(trip)}
+                          className="w-full text-left block focus:outline-none"
                         >
-                          <div className="flex flex-wrap items-start justify-between gap-2">
+                          <div className="flex items-start justify-between gap-3">
                             <div>
-                              <p className="font-mono text-xs text-primary">
-                                EMR-{trip.id.slice(0, 8).toUpperCase()}
-                              </p>
                               <p className="mt-1 text-sm font-semibold text-foreground">
                                 {trip.ambulance_id}
                               </p>
@@ -541,26 +612,35 @@ export default function PoliceControlRoom() {
 
                         <div className="mt-3 flex gap-2" onClick={(event) => event.stopPropagation()}>
                           {clearance === 'pending' && (
-                            <Button
-                              size="sm"
-                              className="flex-1"
-                              disabled={busyTripId === trip.id}
-                              onClick={() => handleStartClearing(trip)}
-                            >
-                              <Navigation className="mr-1.5 h-3.5 w-3.5" />
-                              Start Clearing
-                            </Button>
-                          )}
-                          {clearance === 'clearing' && (
-                            <Button
-                              size="sm"
-                              className="flex-1 bg-success text-white hover:bg-success/90"
-                              disabled={busyTripId === trip.id}
-                              onClick={() => handleMarkCleared(trip)}
-                            >
-                              <Check className="mr-1.5 h-3.5 w-3.5" />
-                              Mark Cleared
-                            </Button>
+                            <>
+                              <Button
+                                size="sm"
+                                className="flex-1 bg-success text-white hover:bg-success/90"
+                                disabled={busyTripId === trip.id}
+                                onClick={() => handleRoadCleared(trip)}
+                              >
+                                <Check className="mr-1.5 h-3.5 w-3.5" />
+                                Road Cleared
+                              </Button>
+                              <Button
+                                size="sm"
+                                className="flex-1 bg-warning text-white hover:bg-warning/90"
+                                disabled={busyTripId === trip.id}
+                                onClick={() => handleTrafficManaged(trip)}
+                              >
+                                <Navigation className="mr-1.5 h-3.5 w-3.5" />
+                                Traffic Managed
+                              </Button>
+                              <Button
+                                size="sm"
+                                className="flex-1 border-emergency/30 text-emergency"
+                                disabled={busyTripId === trip.id}
+                                onClick={() => handleRequestReroute(trip)}
+                              >
+                                <RefreshCw className="mr-1.5 h-3.5 w-3.5" />
+                                Request Reroute
+                              </Button>
+                            </>
                           )}
                           {clearance === 'cleared' && (
                             <p className="w-full rounded-lg border border-success/30 bg-success/10 px-3 py-2 text-center text-xs text-success">
@@ -572,44 +652,6 @@ export default function PoliceControlRoom() {
                     )
                   })}
                 </AnimatePresence>
-              )}
-            </CardContent>
-          </Card>
-
-          <Card className="glass-card border-white/10">
-            <CardHeader className="border-b border-white/10 py-3">
-              <CardTitle className="text-base">Recent Activity</CardTitle>
-              <CardDescription>Newest events first</CardDescription>
-            </CardHeader>
-            <CardContent className="p-4">
-              {activity.length === 0 ? (
-                <div className="rounded-xl border border-dashed border-white/10 bg-white/[0.02] px-4 py-8 text-center text-xs text-muted-foreground">
-                  Waiting for dispatch, acceptance, and clearance events.
-                </div>
-              ) : (
-                <ol className="space-y-3">
-                  {activity.map((item) => (
-                    <li
-                      key={item.id}
-                      className="flex gap-3 rounded-lg border border-white/5 bg-white/[0.02] px-3 py-2.5"
-                    >
-                      <span className="mt-0.5 font-mono text-[10px] text-muted-foreground">
-                        {item.time}
-                      </span>
-                      <span
-                        className={cn(
-                          'text-xs font-medium',
-                          item.tone === 'success' && 'text-success',
-                          item.tone === 'warning' && 'text-warning',
-                          item.tone === 'emergency' && 'text-emergency',
-                          item.tone === 'info' && 'text-foreground',
-                        )}
-                      >
-                        {item.text}
-                      </span>
-                    </li>
-                  ))}
-                </ol>
               )}
             </CardContent>
           </Card>

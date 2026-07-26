@@ -18,7 +18,7 @@ export type RouteState =
   | 'REROUTING'
   | 'CLEARED'
 
-export type PoliceDecision = 'CLEAR_ROUTE' | 'REROUTE_REQUIRED' | 'ROAD_BLOCK_CONFIRMED'
+export type PoliceDecision = 'CLEAR_ROUTE' | 'REROUTE_REQUIRED' | 'ROAD_BLOCK_CONFIRMED' | 'TRAFFIC_MANAGED'
 
 export type AlertType = 'traffic' | 'network_failure' | 'route_assessment' | 'general'
 

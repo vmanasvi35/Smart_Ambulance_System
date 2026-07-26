@@ -1,7 +1,6 @@
 'use client'
 
-import { useEffect, useState } from 'react'
-import Link from 'next/link'
+import { useEffect, useState, useRef } from 'react'
 import { useParams as useNextParams, useRouter as useNextRouter } from 'next/navigation'
 import { motion, AnimatePresence } from 'framer-motion'
 import {
@@ -14,37 +13,43 @@ import {
   RefreshCw,
   User,
   Ambulance,
-  Flag,
   Shield,
-  Bell,
   AlertTriangle,
   CheckCircle2,
   AlertCircle,
+  Activity,
+  Heart,
+  TrendingUp,
 } from 'lucide-react'
+import { Button } from '@/components/ui/button'
 import { createClient } from '@/lib/supabase/client'
 import { AmbulanceMap } from '@/components/ambulance-map'
-import { StatusBadge } from '@/components/status-badge'
-import { PoliceQuickActions } from '@/components/police/quick-actions'
-import { TripTimeline } from '@/components/police/trip-timeline'
-import {
-  buildTripTimeline,
-  estimateSimulatedSpeed,
-  getSmartRoute,
-  needsPoliceIntervention,
-  priorityForTrip,
-} from '@/lib/police-actions'
-import type { AmbulanceTrip, Profile } from '@/lib/types'
+import { priorityForTrip } from '@/lib/police-actions'
+import { calculateSmartRoute } from '@/lib/routing'
+import type { AmbulanceTrip, Profile, ActivityLogRow, ClearanceStatus } from '@/lib/types'
 import { cn } from '@/lib/utils'
+
+function getClearanceStatus(trip: AmbulanceTrip): ClearanceStatus {
+  const routeData = (trip.route_data as Record<string, unknown> | null) ?? {}
+  if (
+    routeData.clearanceStatus === 'pending' ||
+    routeData.clearanceStatus === 'clearing' ||
+    routeData.clearanceStatus === 'cleared'
+  ) {
+    return routeData.clearanceStatus as ClearanceStatus
+  }
+  return 'pending'
+}
 
 export default function AmbulanceDetailsPage() {
   const params = useNextParams<{ tripId: string }>()
   const router = useNextRouter()
   const tripId = params.tripId
   const [trip, setTrip] = useState<AmbulanceTrip | null>(null)
+  const [logs, setLogs] = useState<ActivityLogRow[]>([])
   const [loading, setLoading] = useState(true)
+  const [busy, setBusy] = useState(false)
   const [policeProfile, setPoliceProfile] = useState<Profile | null>(null)
-  const [notifications, setNotifications] = useState<{ id: string; text: string; urgent: boolean }[]>([])
-  const [showNotifDropdown, setShowNotifDropdown] = useState(false)
   const supabase = createClient()
 
   const loadTrip = async () => {
@@ -54,32 +59,17 @@ export default function AmbulanceDetailsPage() {
       .eq('id', tripId)
       .single()
 
-    setTrip(data)
+    if (data) setTrip(data)
     setLoading(false)
   }
 
-  const loadNotifications = async () => {
+  const loadLogs = async () => {
     const { data } = await supabase
-      .from('ambulance_trips')
+      .from('activity_logs')
       .select('*')
-      .in('status', ['pending', 'in_progress'])
-
-    if (data) {
-      const list = data
-        .map((t) => {
-          const needsHelp = needsPoliceIntervention(t)
-          if (needsHelp) {
-            return { id: `${t.id}-help`, text: `${t.ambulance_id} requires assistance`, urgent: true }
-          }
-          const route = getSmartRoute(t)
-          if (t.route_condition === 'clear' || route?.routeState === 'CLEARED') {
-            return { id: `${t.id}-clear`, text: `${t.ambulance_id} route cleared`, urgent: false }
-          }
-          return null
-        })
-        .filter((n): n is { id: string; text: string; urgent: boolean } => n !== null)
-      setNotifications(list)
-    }
+      .eq('trip_id', tripId)
+      .order('created_at', { ascending: false })
+    if (data) setLogs(data)
   }
 
   const getPoliceProfile = async () => {
@@ -95,11 +85,12 @@ export default function AmbulanceDetailsPage() {
   useEffect(() => {
     if (!tripId) return
     loadTrip()
-    loadNotifications()
+    loadLogs()
     getPoliceProfile()
 
-    const channel = supabase
-      .channel(`police-trip-${tripId}`)
+    // Realtime update triggers for trip and logs
+    const tripChannel = supabase
+      .channel(`police-details-trip-${tripId}`)
       .on(
         'postgres_changes',
         {
@@ -110,42 +101,190 @@ export default function AmbulanceDetailsPage() {
         },
         () => {
           loadTrip()
-          loadNotifications()
         },
       )
       .subscribe()
 
-    const allTripsChannel = supabase
-      .channel('police-all-trips-notif')
+    const logsChannel = supabase
+      .channel(`police-details-logs-${tripId}`)
       .on(
         'postgres_changes',
         {
           event: '*',
           schema: 'public',
-          table: 'ambulance_trips',
+          table: 'activity_logs',
+          filter: `trip_id=eq.${tripId}`,
         },
         () => {
-          loadNotifications()
+          loadLogs()
         },
       )
       .subscribe()
 
     return () => {
-      supabase.removeChannel(channel)
-      supabase.removeChannel(allTripsChannel)
+      supabase.removeChannel(tripChannel)
+      supabase.removeChannel(logsChannel)
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [tripId])
 
+  // Operation Actions
+  const handleRoadCleared = async () => {
+    if (!trip) return
+    setBusy(true)
+    
+    const nextRouteData = {
+      ...(trip.route_data as unknown as Record<string, unknown> ?? {}),
+      clearanceStatus: 'cleared',
+      policeDecision: 'CLEAR_ROUTE',
+      policeDecisionAt: new Date().toISOString(),
+      routeState: 'CLEARED',
+    }
+
+    await supabase
+      .from('ambulance_trips')
+      .update({
+        route_condition: 'clear',
+        route_data: nextRouteData,
+        updated_at: new Date().toISOString(),
+      })
+      .eq('id', trip.id)
+
+    await supabase.from('activity_logs').insert({
+      trip_id: trip.id,
+      event_type: 'police_cleared',
+      message: 'Police cleared traffic corridor: route is now clear.',
+    })
+
+    await supabase
+      .from('police_alerts')
+      .update({
+        alert_status: 'resolved',
+        message: 'Police successfully cleared traffic corridor.',
+        updated_at: new Date().toISOString(),
+      })
+      .eq('trip_id', trip.id)
+      .in('alert_status', ['pending', 'acknowledged'])
+
+    await loadTrip()
+    await loadLogs()
+    setBusy(false)
+  }
+
+  const handleTrafficManaged = async () => {
+    if (!trip) return
+    setBusy(true)
+    
+    const nextRouteData = {
+      ...(trip.route_data as unknown as Record<string, unknown> ?? {}),
+      clearanceStatus: 'clearing',
+      policeDecision: 'TRAFFIC_MANAGED',
+      policeDecisionAt: new Date().toISOString(),
+      routeState: 'MANAGED',
+    }
+
+    await supabase
+      .from('ambulance_trips')
+      .update({
+        route_condition: 'moderate_traffic',
+        route_data: nextRouteData,
+        updated_at: new Date().toISOString(),
+      })
+      .eq('id', trip.id)
+
+    await supabase.from('activity_logs').insert({
+      trip_id: trip.id,
+      event_type: 'police_managed',
+      message: 'Police managed traffic corridor: slow but manageable.',
+    })
+
+    await supabase
+      .from('police_alerts')
+      .update({
+        alert_status: 'resolved',
+        message: 'Police managed traffic corridor.',
+        updated_at: new Date().toISOString(),
+      })
+      .eq('trip_id', trip.id)
+      .in('alert_status', ['pending', 'acknowledged'])
+
+    await loadTrip()
+    await loadLogs()
+    setBusy(false)
+  }
+
+  const handleRequestReroute = async () => {
+    if (!trip) return
+    setBusy(true)
+
+    // Simulate roadblock avoid point at current coordinates
+    const newRoadblock = {
+      id: `rb-${Date.now()}`,
+      lat: trip.current_lat ?? trip.source_lat ?? 12.9716,
+      lng: trip.current_lng ?? trip.source_lng ?? 77.5946,
+    }
+
+    const existingRoadblocks = (trip.route_data as unknown as Record<string, unknown> | null)?.roadblocks as any[] | undefined ?? []
+    const avoidPoints = [...existingRoadblocks, newRoadblock]
+
+    // Optimal reroute request
+    const routeRes = await calculateSmartRoute({
+      source: [(trip.current_lat ?? trip.source_lat ?? 12.9716) as number, (trip.current_lng ?? trip.source_lng ?? 77.5946) as number],
+      destination: [(trip.dest_lat ?? 12.9716) as number, (trip.dest_lng ?? 77.5946) as number],
+      avoidPoints,
+      trafficLevel: 'medium',
+    })
+
+    const nextRerouteCount = ((trip.route_data as unknown as Record<string, unknown> | null)?.rerouteCount as number ?? 0) + 1
+
+    const nextRouteData = {
+      ...(trip.route_data as unknown as Record<string, unknown> ?? {}),
+      waypoints: routeRes.waypoints,
+      estimatedTime: routeRes.estimatedTime,
+      totalDistance: routeRes.totalDistance,
+      clearanceStatus: 'pending',
+      policeDecision: 'REROUTE_REQUIRED',
+      policeDecisionAt: new Date().toISOString(),
+      routeState: 'REROUTING',
+      rerouteCount: nextRerouteCount,
+      roadblocks: avoidPoints,
+    }
+
+    await supabase
+      .from('ambulance_trips')
+      .update({
+        route_condition: 'heavy_congestion',
+        route_data: nextRouteData,
+        eta: routeRes.estimatedTime,
+        updated_at: new Date().toISOString(),
+      })
+      .eq('id', trip.id)
+
+    await supabase.from('activity_logs').insert({
+      trip_id: trip.id,
+      event_type: 'police_rerouted',
+      message: `Police requested optimal route recalculation (Reroute #${nextRerouteCount}).`,
+    })
+
+    await supabase
+      .from('police_alerts')
+      .update({
+        alert_status: 'resolved',
+        message: 'Police requested route recalculation.',
+        updated_at: new Date().toISOString(),
+      })
+      .eq('trip_id', trip.id)
+      .in('alert_status', ['pending', 'acknowledged'])
+
+    await loadTrip()
+    await loadLogs()
+    setBusy(false)
+  }
+
   if (loading) {
     return (
       <div className="flex min-h-screen items-center justify-center bg-[#060e1a]">
-        <div className="flex flex-col items-center gap-3">
-          <RefreshCw className="h-8 w-8 animate-spin text-emergency" />
-          <p className="text-sm font-bold tracking-wider text-muted-foreground uppercase">
-            Loading Incident Console…
-          </p>
-        </div>
+        <RefreshCw className="h-8 w-8 animate-spin text-red-500" />
       </div>
     )
   }
@@ -155,39 +294,27 @@ export default function AmbulanceDetailsPage() {
       <div className="flex min-h-screen flex-col items-center justify-center gap-3 p-6 bg-[#060e1a]">
         <AlertCircle className="h-10 w-10 text-red-500" />
         <p className="text-sm text-muted-foreground">Ambulance trip not found.</p>
-        <button
-          type="button"
-          onClick={() => router.push('/police/dashboard')}
-          className="rounded-xl border border-white/10 bg-white/5 px-4 py-2 text-sm text-foreground hover:bg-white/10 transition-all"
-        >
-          Back to Control Room
-        </button>
+        <Button onClick={() => router.push('/police/alerts')}>Back to Alerts</Button>
       </div>
     )
   }
 
-  const route = getSmartRoute(trip)
-  const timeline = buildTripTimeline(trip)
-  const speed = estimateSimulatedSpeed(trip)
   const priority = priorityForTrip(trip)
-  const needsHelp = needsPoliceIntervention(trip)
-
-  const situationTitle = needsHelp
-    ? trip.route_condition === 'road_blocked'
-      ? 'Road Blocked Detected'
-      : 'Heavy Traffic/Congestion Detected'
-    : trip.route_condition === 'moderate_traffic'
-      ? 'Moderate Traffic Alert'
-      : 'Route is Clear'
+  const routeData = (trip.route_data as Record<string, unknown> | null) ?? {}
+  const patientName = String(routeData.patientName ?? 'Not provided')
+  const emergencyType = String(routeData.emergencyType ?? 'Not provided')
+  const clearance = getClearanceStatus(trip)
+  const distanceRemaining = typeof routeData.totalDistance === 'number' ? routeData.totalDistance : 0
 
   return (
     <div className="flex h-screen flex-col bg-[#060e1a] text-foreground overflow-hidden">
-      <header className="z-50 border-b border-white/10 bg-[#07111f]/90 px-6 py-3.5 backdrop-blur-xl shrink-0 flex items-center justify-between">
+      {/* Dynamic Header */}
+      <header className="border-b border-white/10 bg-[#07111f]/90 px-6 py-3.5 backdrop-blur-xl shrink-0 flex items-center justify-between z-10">
         <div className="flex items-center gap-4">
           <button
-            onClick={() => router.push('/police/dashboard')}
-            className="inline-flex h-9 w-9 items-center justify-center rounded-xl border border-white/10 bg-white/5 text-muted-foreground transition-all hover:bg-white/10 hover:text-foreground"
-            title="Back to Dashboard"
+            onClick={() => router.push('/police/alerts')}
+            className="inline-flex h-9 w-9 items-center justify-center rounded-xl border border-white/10 bg-white/5 text-muted-foreground transition-all hover:bg-white/10 hover:text-foreground cursor-pointer"
+            title="Back to Alerts workspace"
           >
             <ArrowLeft className="h-4.5 w-4.5" />
           </button>
@@ -196,234 +323,192 @@ export default function AmbulanceDetailsPage() {
               <Shield className="h-4.5 w-4.5" />
             </div>
             <div>
-              <span className="text-[10px] font-bold uppercase tracking-[0.2em] text-red-500 block leading-none">
-                Emergency Console
+              <span className="text-[9px] font-black uppercase tracking-wider text-red-500 block leading-none">
+                Emergency Command
               </span>
-              <h1 className="text-sm font-black tracking-tight text-foreground mt-0.5">
-                Active Incident Room
+              <h1 className="text-sm font-bold text-foreground mt-0.5 uppercase tracking-wide">
+                Console Room · EMR-{trip.id.slice(0, 8).toUpperCase()}
               </h1>
             </div>
           </div>
         </div>
 
-        <div className="flex items-center gap-4 relative">
-          <button
-            onClick={() => setShowNotifDropdown(!showNotifDropdown)}
-            className="relative inline-flex h-9 w-9 items-center justify-center rounded-xl border border-white/10 bg-white/5 text-muted-foreground transition-all hover:bg-white/10 hover:text-foreground"
-          >
-            <Bell className="h-4.5 w-4.5" />
-            {notifications.length > 0 && (
-              <span className="absolute -top-1 -right-1 flex h-4 w-4 items-center justify-center rounded-full bg-red-500 text-[9px] font-extrabold text-white shadow-[0_0_8px_rgba(239,68,68,0.5)]">
-                {notifications.length}
-              </span>
-            )}
-          </button>
-
-          <AnimatePresence>
-            {showNotifDropdown && (
-              <>
-                <div className="fixed inset-0 z-30" onClick={() => setShowNotifDropdown(false)} />
-                <motion.div
-                  initial={{ opacity: 0, y: 10, scale: 0.95 }}
-                  animate={{ opacity: 1, y: 0, scale: 1 }}
-                  exit={{ opacity: 0, y: 10, scale: 0.95 }}
-                  className="absolute right-14 top-11 z-40 w-72 rounded-2xl border border-white/10 bg-[#07111f]/95 p-4 shadow-2xl backdrop-blur-xl"
-                >
-                  <h3 className="text-xs font-extrabold uppercase tracking-widest text-muted-foreground mb-3">
-                    Live Notifications
-                  </h3>
-                  <div className="space-y-2 max-h-60 overflow-y-auto">
-                    {notifications.length === 0 ? (
-                      <p className="text-xs text-muted-foreground/70 py-2">
-                        No active operational alerts.
-                      </p>
-                    ) : (
-                      notifications.map((n) => (
-                        <div
-                          key={n.id}
-                          className={cn(
-                            'p-2.5 rounded-xl border text-xs font-semibold flex items-start gap-2',
-                            n.urgent
-                              ? 'border-red-500/20 bg-red-500/5 text-red-300'
-                              : 'border-emerald-500/20 bg-emerald-500/5 text-emerald-300',
-                          )}
-                        >
-                          <span
-                            className={cn(
-                              'h-1.5 w-1.5 rounded-full shrink-0 mt-1.5',
-                              n.urgent ? 'bg-red-400 animate-pulse' : 'bg-emerald-400',
-                            )}
-                          />
-                          <span>{n.text}</span>
-                        </div>
-                      ))
-                    )}
-                  </div>
-                </motion.div>
-              </>
-            )}
-          </AnimatePresence>
-
-          <div className="flex items-center gap-2.5 border-l border-white/10 pl-4">
-            <div className="h-8 w-8 rounded-xl bg-blue-500/10 border border-blue-500/20 text-blue-400 flex items-center justify-center font-bold text-xs uppercase shadow-[0_0_12px_rgba(59,130,246,0.1)]">
-              {policeProfile?.full_name?.charAt(0) ?? 'P'}
-            </div>
-            <div className="hidden sm:block">
-              <p className="text-xs font-bold text-foreground block max-w-[100px] truncate leading-none">
-                {policeProfile?.full_name ?? 'Police Officer'}
-              </p>
-              <span className="text-[9px] text-muted-foreground font-semibold mt-0.5 block leading-none">
-                {policeProfile?.police_station ?? 'HQ Division'}
-              </span>
-            </div>
+        <div className="flex items-center gap-3">
+          <div className="hidden sm:block text-right">
+            <p className="text-xs font-bold text-slate-200">{policeProfile?.full_name ?? 'Police Officer'}</p>
+            <span className="text-[10px] text-muted-foreground font-semibold">{policeProfile?.police_station ?? 'Traffic Headquarters'}</span>
           </div>
         </div>
       </header>
 
-      <div className="flex-1 overflow-hidden grid lg:grid-cols-[380px_1fr] xl:grid-cols-[400px_1fr] bg-[#060e1a]">
-        <div className="border-r border-white/10 p-5 overflow-y-auto space-y-5 bg-[#07111f]/20">
-          <div className="flex items-center justify-between">
-            <h2 className="text-base font-extrabold text-foreground tracking-tight uppercase">
-              Operational Details
-            </h2>
-            <span
-              className={cn(
-                'rounded-full px-2.5 py-0.5 text-[9px] font-extrabold uppercase tracking-widest',
-                priority === 'Critical' && 'bg-red-500/10 text-red-400 border border-red-500/20',
-                priority === 'High' && 'bg-amber-500/10 text-amber-400 border border-amber-500/20',
-                priority === 'Normal' && 'bg-emerald-500/10 text-emerald-400 border border-emerald-500/20',
-              )}
-            >
-              Priority: {priority}
-            </span>
-          </div>
+      {/* Main Split Layout: 70% Map | 30% Panel */}
+      <div className="flex-1 overflow-hidden flex flex-col lg:flex-row bg-[#060e1a]">
+        
+        {/* Left Side: Map Overlay (70% width) */}
+        <div className="flex-1 h-full relative bg-[#060e1a] border-r border-white/10">
+          <AmbulanceMap
+            trips={[trip]}
+            selectedTrip={trip}
+            showAllTrips={false}
+            className="absolute inset-0 w-full h-full"
+          />
 
-          <motion.div
-            initial={{ opacity: 0, y: 12 }}
-            animate={{ opacity: 1, y: 0 }}
-            className="glass-card rounded-2xl border border-white/10 p-4.5 bg-[#07111f]/45 space-y-3"
-          >
-            <InfoRow icon={Ambulance} label="Ambulance ID" value={trip.ambulance_id} />
-            <InfoRow icon={User} label="Driver Name" value={trip.driver?.full_name ?? '—'} />
-            <InfoRow icon={MapPin} label="Source" value={trip.source} />
-            <InfoRow icon={Hospital} label="Destination Hospital" value={trip.destination} />
-            <InfoRow icon={Clock} label="ETA" value={trip.eta != null ? `${trip.eta} minutes` : '—'} />
-            <InfoRow icon={Gauge} label="Simulated Speed" value={`${speed} km/h`} />
-            <div className="flex items-center justify-between border-t border-white/5 pt-2 mt-2">
-              <span className="text-[10px] uppercase font-bold text-muted-foreground/80">
-                Route Status
-              </span>
-              <StatusBadge status={route?.routeState ?? trip.route_condition ?? trip.status} />
-            </div>
-          </motion.div>
-
-          <motion.div
-            initial={{ opacity: 0, y: 12 }}
-            animate={{ opacity: 1, y: 0 }}
-            transition={{ delay: 0.05 }}
-            className={cn(
-              'glass-card rounded-2xl border p-4.5 shadow-md',
-              needsHelp
-                ? 'border-red-500/25 bg-red-950/5 shadow-[0_0_15px_rgba(239,68,68,0.05)]'
-                : 'border-emerald-500/25 bg-emerald-950/5',
-            )}
-          >
-            <p className="text-[10px] font-extrabold uppercase tracking-wider text-muted-foreground">
-              Current Situation
-            </p>
-            <p className="mt-2 text-base font-bold text-foreground tracking-tight">
-              {situationTitle}
-            </p>
-            <div className="mt-3.5 space-y-2 text-xs text-muted-foreground/90 border-t border-white/5 pt-3">
-              <div className="flex justify-between">
-                <span>Location:</span>
-                <span className="font-bold text-foreground">
-                  {trip.route_condition === 'road_blocked' ? 'Roadblock Corridor' : 'Active Route Corridor'}
-                </span>
-              </div>
-              <div className="flex justify-between">
-                <span>Delay Impact:</span>
-                <span
-                  className={cn(
-                    'font-bold',
-                    needsHelp ? 'text-red-400' : 'text-emerald-400',
-                  )}
-                >
-                  {needsHelp ? '+5 minutes' : 'None'}
-                </span>
-              </div>
-              <div className="flex justify-between">
-                <span>Action Required:</span>
-                <span
-                  className={cn(
-                    'font-extrabold uppercase tracking-wide',
-                    needsHelp ? 'text-red-400' : 'text-emerald-400',
-                  )}
-                >
-                  {needsHelp ? 'Yes' : 'No'}
-                </span>
-              </div>
-            </div>
-          </motion.div>
-
-          <motion.div
-            initial={{ opacity: 0, y: 12 }}
-            animate={{ opacity: 1, y: 0 }}
-            transition={{ delay: 0.1 }}
-            className="glass-card rounded-2xl border border-white/10 p-4.5 bg-[#07111f]/45"
-          >
-            <AnimatePresence mode="wait">
-              {!needsHelp ? (
-                <motion.div
-                  key="clear-state"
-                  initial={{ opacity: 0, y: 5 }}
-                  animate={{ opacity: 1, y: 0 }}
-                  exit={{ opacity: 0, y: -5 }}
-                  className="rounded-xl border border-emerald-500/20 bg-emerald-500/5 p-4 text-center"
-                >
-                  <CheckCircle2 className="mx-auto h-6 w-6 text-emerald-400" />
-                  <p className="mt-2 text-sm font-bold text-foreground">Route is clear</p>
-                  <p className="mt-1 text-xs text-muted-foreground">
-                    No police intervention required at this moment.
-                  </p>
-                </motion.div>
-              ) : (
-                <motion.div
-                  key="action-state"
-                  initial={{ opacity: 0, y: 5 }}
-                  animate={{ opacity: 1, y: 0 }}
-                  exit={{ opacity: 0, y: -5 }}
-                >
-                  <PoliceQuickActions trip={trip} onDone={loadTrip} />
-                </motion.div>
-              )}
-            </AnimatePresence>
-          </motion.div>
-        </div>
-
-        <div className="flex flex-col overflow-hidden">
-          <div className="flex-1 relative bg-[#060e1a]">
-            <AmbulanceMap
-              trips={[trip]}
-              selectedTrip={trip}
-              showAllTrips={false}
-              className="absolute inset-0 w-full h-full"
-            />
-            <div className="absolute top-4 left-4 z-10 rounded-xl border border-white/10 bg-[#07111f]/80 px-3.5 py-2 backdrop-blur-xl shadow-lg flex items-center gap-2">
+          {/* Map Overlays */}
+          <div className="absolute top-4 left-4 z-10 flex flex-col gap-2">
+            <div className="rounded-xl border border-white/10 bg-[#07111f]/85 px-3 py-2 backdrop-blur-md shadow-lg flex items-center gap-2">
               <span className="relative flex h-2 w-2">
                 <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-blue-400 opacity-75"></span>
                 <span className="relative inline-flex rounded-full h-2 w-2 bg-blue-500 animate-pulse"></span>
               </span>
-              <span className="text-[11px] font-bold uppercase tracking-wider text-foreground">
-                Live GPS Stream Active
+              <span className="text-[10px] font-bold uppercase tracking-wider text-foreground">
+                GPS Feed Live
               </span>
             </div>
-          </div>
 
-          <div className="border-t border-white/10 p-5 shrink-0 bg-[#07111f]/35">
-            <TripTimeline steps={timeline} />
+            <div className="rounded-xl border border-white/10 bg-[#07111f]/85 p-3.5 backdrop-blur-md shadow-lg min-w-[200px] space-y-1.5">
+              <div>
+                <span className="text-[9px] uppercase tracking-wider text-muted-foreground font-bold">Remaining ETA</span>
+                <p className="text-sm font-bold text-slate-200">{trip.eta != null ? `${trip.eta} Min` : '—'}</p>
+              </div>
+              <div className="border-t border-white/5 pt-1.5">
+                <span className="text-[9px] uppercase tracking-wider text-muted-foreground font-bold">Distance Remaining</span>
+                <p className="text-sm font-bold text-slate-200">{distanceRemaining > 0 ? `${distanceRemaining.toFixed(2)} km` : 'Calculating...'}</p>
+              </div>
+            </div>
           </div>
         </div>
+
+        {/* Right Side: Command Controls & Info (30% width, min-width 380px) */}
+        <div className="w-full lg:w-[400px] flex flex-col shrink-0 h-full overflow-hidden bg-[#07111f]/20">
+          
+          {/* Scrollable details container */}
+          <div className="flex-1 overflow-y-auto p-5 space-y-6">
+            
+            {/* 1. Ambulance details card */}
+            <div>
+              <h2 className="text-xs font-bold text-muted-foreground uppercase tracking-widest mb-3">Ambulance Details</h2>
+              <div className="p-4 rounded-xl border border-white/10 bg-[#07111f]/45 space-y-3">
+                <InfoRow icon={Ambulance} label="Ambulance ID" value={trip.ambulance_id} />
+                <InfoRow icon={User} label="Driver Name" value={trip.driver?.full_name ?? 'Driver Account'} />
+                <InfoRow icon={Gauge} label="Driver Status" value={trip.driver ? 'Active' : 'Offline'} />
+                <InfoRow icon={Heart} label="Patient Name" value={patientName} />
+                <InfoRow icon={AlertTriangle} label="Emergency Type" value={emergencyType} />
+                <InfoRow icon={TrendingUp} label="Corridor Priority" value={priority} />
+                
+                <div className="border-t border-white/5 pt-3 space-y-2 text-xs">
+                  <div className="flex items-start gap-1.5 min-w-0">
+                    <MapPin className="h-3.5 w-3.5 text-amber-500 shrink-0 mt-0.5" />
+                    <div className="min-w-0">
+                      <span className="text-[10px] text-muted-foreground uppercase font-bold">Pickup location</span>
+                      <p className="font-semibold text-slate-200 truncate">{trip.source}</p>
+                    </div>
+                  </div>
+                  <div className="flex items-start gap-1.5 min-w-0">
+                    <Hospital className="h-3.5 w-3.5 text-emerald-500 shrink-0 mt-0.5" />
+                    <div className="min-w-0">
+                      <span className="text-[10px] text-muted-foreground uppercase font-bold">Destination Hospital</span>
+                      <p className="font-semibold text-slate-200 truncate">{trip.destination}</p>
+                    </div>
+                  </div>
+                </div>
+              </div>
+            </div>
+
+            {/* 2. Traffic Analysis Panel */}
+            <div>
+              <h2 className="text-xs font-bold text-muted-foreground uppercase tracking-widest mb-3">Traffic Analysis</h2>
+              <div className="p-4 rounded-xl border border-white/10 bg-[#07111f]/45 flex items-center justify-between">
+                <span className="text-xs font-bold text-slate-300">Live Conditions</span>
+                <span className="flex items-center gap-2">
+                  {trip.route_condition === 'clear' && (
+                    <span className="inline-flex items-center gap-1.5 rounded-full border border-emerald-500/30 bg-emerald-500/10 px-2.5 py-0.5 text-xs font-bold text-emerald-400">
+                      <span className="h-1.5 w-1.5 rounded-full bg-emerald-400 animate-pulse" />
+                      🟢 Road Clear
+                    </span>
+                  )}
+                  {trip.route_condition === 'moderate_traffic' && (
+                    <span className="inline-flex items-center gap-1.5 rounded-full border border-yellow-500/30 bg-yellow-500/10 px-2.5 py-0.5 text-xs font-bold text-yellow-400">
+                      <span className="h-1.5 w-1.5 rounded-full bg-yellow-400 animate-pulse" />
+                      🟡 Moderate Traffic
+                    </span>
+                  )}
+                  {trip.route_condition === 'heavy_congestion' && (
+                    <span className="inline-flex items-center gap-1.5 rounded-full border border-orange-500/30 bg-orange-500/10 px-2.5 py-0.5 text-xs font-bold text-orange-400">
+                      <span className="h-1.5 w-1.5 rounded-full bg-orange-400 animate-pulse" />
+                      🟠 Heavy Traffic
+                    </span>
+                  )}
+                  {trip.route_condition === 'road_blocked' && (
+                    <span className="inline-flex items-center gap-1.5 rounded-full border border-red-500/30 bg-red-500/10 px-2.5 py-0.5 text-xs font-bold text-red-400 animate-bounce">
+                      <span className="h-1.5 w-1.5 rounded-full bg-red-400 animate-pulse" />
+                      🔴 Road Blocked
+                    </span>
+                  )}
+                </span>
+              </div>
+            </div>
+
+            {/* 3. Traffic Action Buttons */}
+            <div>
+              <h2 className="text-xs font-bold text-muted-foreground uppercase tracking-widest mb-3">Traffic Actions</h2>
+              <div className="space-y-2">
+                <Button
+                  size="default"
+                  className="w-full bg-emerald-600 hover:bg-emerald-700 text-white font-extrabold cursor-pointer"
+                  disabled={busy}
+                  onClick={handleRoadCleared}
+                >
+                  Road Cleared
+                </Button>
+                
+                <Button
+                  size="default"
+                  variant="secondary"
+                  className="w-full bg-yellow-600/20 border border-yellow-500/30 hover:bg-yellow-500/20 text-yellow-400 font-extrabold cursor-pointer"
+                  disabled={busy}
+                  onClick={handleTrafficManaged}
+                >
+                  Traffic Managed
+                </Button>
+                
+                <Button
+                  size="default"
+                  variant="destructive"
+                  className="w-full bg-red-600 hover:bg-red-700 text-white font-extrabold cursor-pointer"
+                  disabled={busy}
+                  onClick={handleRequestReroute}
+                >
+                  Request Reroute
+                </Button>
+              </div>
+            </div>
+
+            {/* 4. Activity Timeline */}
+            <div>
+              <h2 className="text-xs font-bold text-muted-foreground uppercase tracking-widest mb-4">Activity Timeline</h2>
+              <div className="relative border-l border-white/10 ml-2 space-y-4">
+                {logs.length === 0 ? (
+                  <p className="text-xs text-muted-foreground pl-4">No events registered yet.</p>
+                ) : (
+                  logs.map((log) => (
+                    <div key={log.id} className="relative pl-6">
+                      <span className="absolute -left-1 flex h-2 w-2 items-center justify-center rounded-full bg-blue-500 ring-2 ring-[#060e1a]">
+                        <span className="h-1 w-1 rounded-full bg-blue-300" />
+                      </span>
+                      <time className="mb-0.5 text-[9px] font-bold uppercase tracking-wider text-muted-foreground block">
+                        {new Date(log.created_at).toLocaleTimeString()}
+                      </time>
+                      <p className="text-xs font-semibold text-slate-200 leading-relaxed">{log.message}</p>
+                    </div>
+                  ))
+                )}
+              </div>
+            </div>
+
+          </div>
+
+        </div>
+
       </div>
     </div>
   )
@@ -442,7 +527,7 @@ function InfoRow({
     <div className="flex items-center gap-3 rounded-xl border border-white/5 bg-[#0c192c]/20 px-3.5 py-2.5">
       <Icon className="h-4.5 w-4.5 shrink-0 text-blue-400" />
       <div className="min-w-0 flex-1 flex justify-between items-center">
-        <span className="text-[11px] uppercase tracking-wider text-muted-foreground/80 font-semibold">
+        <span className="text-[10px] uppercase tracking-wider text-muted-foreground/80 font-bold">
           {label}
         </span>
         <span className="text-xs font-bold text-foreground truncate pl-2">{value}</span>

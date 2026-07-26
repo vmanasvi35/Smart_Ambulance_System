@@ -24,7 +24,6 @@ interface DriverSidebarProps {
 
 const navItems = [
   { href: '/driver/dashboard', label: 'Control Room', icon: LayoutDashboard },
-  { href: '/driver/new-trip', label: 'New Trip', icon: MapPin },
   { href: '/driver/history', label: 'Trip History', icon: History },
 ]
 

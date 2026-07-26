@@ -1,10 +1,9 @@
 'use client'
 
 import { useState } from 'react'
-import Link from 'next/link'
+import { useRouter } from 'next/navigation'
 import { motion, AnimatePresence } from 'framer-motion'
 import { 
-  Settings, 
   AlertOctagon, 
   Activity,
   Menu,
@@ -13,23 +12,32 @@ import {
   ChevronRight,
   ShieldAlert,
   ListChecks,
+  LogOut,
 } from 'lucide-react'
 import { cn } from '@/lib/utils'
+import { createClient } from '@/lib/supabase/client'
 
 interface DispatchSidebarProps {
   activeSection?: string
   onSectionChange?: (section: string) => void
+  dispatcherName?: string
 }
 
-export function DispatchSidebar({ activeSection = 'control-room', onSectionChange }: DispatchSidebarProps) {
+export function DispatchSidebar({ activeSection = 'control-room', onSectionChange, dispatcherName }: DispatchSidebarProps) {
   const [collapsed, setCollapsed] = useState(false)
   const [mobileOpen, setMobileOpen] = useState(false)
+  const router = useRouter()
+  const supabase = createClient()
+
+  const handleLogout = async () => {
+    await supabase.auth.signOut()
+    router.push('/auth/login')
+  }
 
   const navItems = [
     { id: 'control-room', label: 'Control Room', icon: Activity },
     { id: 'dispatch-queue', label: 'Dispatch Queue', icon: ListChecks },
     { id: 'incidents', label: 'Incident Log', icon: AlertOctagon },
-    { id: 'settings', label: 'System Settings', icon: Settings },
   ]
 
   return (
@@ -144,13 +152,32 @@ export function DispatchSidebar({ activeSection = 'control-room', onSectionChang
                 Online
               </span>
             </div>
-            <div className="text-[10px] text-muted-foreground/75 leading-relaxed">
-              Operator Shift: **B**<br />
-              Supervisor: **C. Reynolds**<br />
-              Emergency Broadcast: **Active**
+             <div className="text-[10px] text-muted-foreground/75 leading-relaxed">
+              Operator Shift: <strong>B</strong><br />
+              Supervisor: <strong>{dispatcherName || 'C. Reynolds'}</strong><br />
+              Emergency Broadcast: <strong>Active</strong>
             </div>
           </div>
         )}
+        {/* Sign Out Button at bottom */}
+        <div className="p-3 border-t border-white/10">
+          <button
+            onClick={handleLogout}
+            className={cn(
+              "flex w-full items-center gap-3 rounded-xl px-3 py-3 text-sm font-semibold tracking-wide text-muted-foreground hover:bg-red-500/10 hover:text-red-400 transition-all duration-200 border border-transparent cursor-pointer"
+            )}
+          >
+            <LogOut className="h-5 w-5 shrink-0" />
+            {!collapsed && (
+              <motion.span
+                initial={{ opacity: 0 }}
+                animate={{ opacity: 1 }}
+              >
+                Sign Out
+              </motion.span>
+            )}
+          </button>
+        </div>
       </motion.aside>
     </>
   )

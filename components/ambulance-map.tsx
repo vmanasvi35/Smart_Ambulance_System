@@ -22,6 +22,7 @@ interface AmbulanceMapProps {
   spawnedVehicles?: SpawnedVehicle[]
   onRoadblockAdd?: (lat: number, lng: number) => void
   className?: string
+  showTrafficCircles?: boolean
 }
 
 export function AmbulanceMap({
@@ -36,6 +37,7 @@ export function AmbulanceMap({
   spawnedVehicles = [],
   onRoadblockAdd,
   className = '',
+  showTrafficCircles = false,
 }: AmbulanceMapProps) {
   const mapRef = useRef<HTMLDivElement>(null)
   const mapInstanceRef = useRef<L.Map | null>(null)
@@ -45,8 +47,11 @@ export function AmbulanceMap({
   const trafficLayerRef = useRef<L.LayerGroup | null>(null)
   const simulationLayerRef = useRef<L.LayerGroup | null>(null)
   const lastFittedTripIdRef = useRef<string | null>(null)
+  const ambulanceMarkersRef = useRef<Map<string, L.Marker>>(new Map())
+  const previousPositionsRef = useRef<Map<string, [number, number]>>(new Map())
   const [isReady, setIsReady] = useState(false)
   const [L, setL] = useState<typeof import('leaflet') | null>(null)
+  const [mapMoved, setMapMoved] = useState(false)
 
   useEffect(() => {
     let mounted = true
@@ -90,9 +95,21 @@ export function AmbulanceMap({
     const timeoutId = window.setTimeout(invalidate, 80)
     window.addEventListener('resize', invalidate)
 
+    const handleMove = () => {
+      const currentCenter = map.getCenter()
+      const currentZoom = map.getZoom()
+      if (currentCenter) {
+        const centerMoved = Math.abs(currentCenter.lat - 12.9716) > 0.005 || Math.abs(currentCenter.lng - 77.5946) > 0.005
+        const zoomMoved = currentZoom !== 12
+        setMapMoved(centerMoved || zoomMoved)
+      }
+    }
+    map.on('moveend', handleMove)
+
     return () => {
       window.clearTimeout(timeoutId)
       window.removeEventListener('resize', invalidate)
+      map.off('moveend', handleMove)
       if (mapInstanceRef.current) {
         mapInstanceRef.current.remove()
         mapInstanceRef.current = null
@@ -233,23 +250,81 @@ export function AmbulanceMap({
       const isFocused = focusTrip?.id === trip.id
 
       if (trip.current_lat != null && trip.current_lng != null) {
-        const marker = L.marker([trip.current_lat, trip.current_lng], {
-          icon: createAmbulanceIcon(isActive),
-          opacity: focusTrip && !isFocused ? 0.55 : 1,
-        }).bindPopup(`
-            <div style="font-size: 14px; padding: 4px;">
-              <strong>${trip.ambulance_id}</strong><br/>
-              ${trip.source}${trip.destination ? ` → ${trip.destination}` : ''}<br/>
-              Status: ${trip.status}<br/>
-              ${trip.eta ? `ETA: ${trip.eta} min` : ''}
-            </div>
-          `)
+        const currentPosition: [number, number] = [trip.current_lat, trip.current_lng]
+        const previousPosition = previousPositionsRef.current.get(trip.id)
+        
+        let marker = ambulanceMarkersRef.current.get(trip.id)
+        
+        if (!marker) {
+          marker = L.marker(currentPosition, {
+            icon: createAmbulanceIcon(isActive),
+            opacity: focusTrip && !isFocused ? 0.55 : 1,
+          }).bindPopup(`
+              <div style="font-size: 14px; padding: 4px;">
+                <strong>${trip.ambulance_id}</strong><br/>
+                ${trip.source}${trip.destination ? ` → ${trip.destination}` : ''}<br/>
+                Status: ${trip.status}<br/>
+                ${trip.eta ? `ETA: ${trip.eta} min` : ''}
+              </div>
+            `)
 
-        if (onTripSelect) {
-          marker.on('click', () => onTripSelect(trip))
+          if (onTripSelect) {
+            marker.on('click', () => onTripSelect(trip))
+          }
+
+          markersRef.current?.addLayer(marker)
+          ambulanceMarkersRef.current.set(trip.id, marker)
+        } else {
+          // Smooth GPS-like movement animation using custom interpolation
+          if (previousPosition) {
+            const [prevLat, prevLng] = previousPosition
+            const [newLat, newLng] = currentPosition
+            
+            // Only animate if position changed significantly
+            if (Math.abs(prevLat - newLat) > 0.0001 || Math.abs(prevLng - newLng) > 0.0001) {
+              // Custom smooth animation
+              const duration = 1500 // 1.5 seconds
+              const startTime = performance.now()
+              
+              const animate = (currentTime: number) => {
+                const elapsed = currentTime - startTime
+                const progress = Math.min(elapsed / duration, 1)
+                
+                // Ease out cubic function for smooth deceleration
+                const easeProgress = 1 - Math.pow(1 - progress, 3)
+                
+                const interpolatedLat = prevLat + (newLat - prevLat) * easeProgress
+                const interpolatedLng = prevLng + (newLng - prevLng) * easeProgress
+                
+                marker.setLatLng([interpolatedLat, interpolatedLng])
+                
+                if (progress < 1) {
+                  requestAnimationFrame(animate)
+                }
+              }
+              
+              requestAnimationFrame(animate)
+            }
+          } else {
+            marker.setLatLng(currentPosition)
+          }
+          
+          // Update icon and opacity based on current state
+          marker.setIcon(createAmbulanceIcon(isActive))
+          marker.setOpacity(focusTrip && !isFocused ? 0.55 : 1)
         }
-
-        markersRef.current?.addLayer(marker)
+        
+        previousPositionsRef.current.set(trip.id, currentPosition)
+      }
+      
+      // Clean up markers for trips that no longer exist
+      const currentTripIds = new Set(tripsToShow.map(t => t.id))
+      for (const [tripId, marker] of ambulanceMarkersRef.current) {
+        if (!currentTripIds.has(tripId)) {
+          markersRef.current?.removeLayer(marker)
+          ambulanceMarkersRef.current.delete(tripId)
+          previousPositionsRef.current.delete(tripId)
+        }
       }
 
       if (isFocused) {
@@ -317,9 +392,10 @@ export function AmbulanceMap({
       }).addTo(mapInstanceRef.current)
 
       if (
-        trafficLevel !== 'low' ||
-        focusTrip.route_condition === 'heavy_congestion' ||
-        focusTrip.route_condition === 'moderate_traffic'
+        showTrafficCircles &&
+        (trafficLevel !== 'low' ||
+          focusTrip.route_condition === 'heavy_congestion' ||
+          focusTrip.route_condition === 'moderate_traffic')
       ) {
         waypoints
           .filter((_, index) => index % 6 === 0)
@@ -351,7 +427,7 @@ export function AmbulanceMap({
         mapInstanceRef.current.setView([12.9716, 77.5946], 12, { animate: true })
       }
     }
-  }, [L, trips, selectedTrip, showAllTrips, onTripSelect, trafficLevel, roadblocks, spawnedVehicles])
+  }, [L, trips, selectedTrip, showAllTrips, onTripSelect, trafficLevel, roadblocks, spawnedVehicles, showTrafficCircles])
 
   if (!isReady) {
     return (
@@ -364,5 +440,22 @@ export function AmbulanceMap({
     )
   }
 
-  return <div ref={mapRef} className={`rounded-lg ${className}`} style={{ zIndex: 0 }} />
+  return (
+    <div className="relative w-full h-full">
+      <div ref={mapRef} className={`rounded-lg ${className}`} style={{ zIndex: 0 }} />
+      {mapMoved && (
+        <button
+          onClick={() => {
+            if (mapInstanceRef.current) {
+              mapInstanceRef.current.setView([12.9716, 77.5946], 12, { animate: true })
+              setMapMoved(false)
+            }
+          }}
+          className="absolute top-3 right-3 z-[1000] rounded-lg bg-[#07111f]/90 border border-white/10 px-2.5 py-1.5 text-[10px] font-bold text-slate-200 shadow-lg backdrop-blur-md hover:bg-white/10 hover:text-foreground transition-all cursor-pointer"
+        >
+          Reset Position
+        </button>
+      )}
+    </div>
+  )
 }

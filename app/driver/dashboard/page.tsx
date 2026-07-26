@@ -25,6 +25,8 @@ import {
   Hospital,
   Map,
   UserCheck,
+  WifiOff,
+  AlertCircle,
 } from 'lucide-react'
 import type { AmbulanceTrip, ClearanceStatus, PoliceDecision, Profile, RouteCondition, TrafficLevel } from '@/lib/types'
 import { TRIP_WORKFLOW_STATUS, normalizeTripWorkflowStatus } from '@/lib/trip-status'
@@ -39,10 +41,8 @@ const rerouteDecisions: PoliceDecision[] = ['REROUTE_REQUIRED', 'ROAD_BLOCK_CONF
 // Valid Lifecycle Transitions mapping
 const VALID_TRANSITIONS: Record<string, string[]> = {
   [TRIP_WORKFLOW_STATUS.available]: [TRIP_WORKFLOW_STATUS.assigned],
-  [TRIP_WORKFLOW_STATUS.assigned]: [TRIP_WORKFLOW_STATUS.accepted, TRIP_WORKFLOW_STATUS.available],
-  [TRIP_WORKFLOW_STATUS.accepted]: [TRIP_WORKFLOW_STATUS.goingToPickup],
-  [TRIP_WORKFLOW_STATUS.goingToPickup]: [TRIP_WORKFLOW_STATUS.patientOnboard],
-  [TRIP_WORKFLOW_STATUS.patientOnboard]: [TRIP_WORKFLOW_STATUS.enRouteHospital],
+  [TRIP_WORKFLOW_STATUS.assigned]: [TRIP_WORKFLOW_STATUS.goingToPickup, TRIP_WORKFLOW_STATUS.available],
+  [TRIP_WORKFLOW_STATUS.goingToPickup]: [TRIP_WORKFLOW_STATUS.enRouteHospital],
   [TRIP_WORKFLOW_STATUS.enRouteHospital]: [TRIP_WORKFLOW_STATUS.completed],
   [TRIP_WORKFLOW_STATUS.completed]: [TRIP_WORKFLOW_STATUS.available],
 }
@@ -76,6 +76,7 @@ export default function DriverDashboard() {
   const [routeIndex, setRouteIndex] = useState(0)
   const [lowSpeedTicks, setLowSpeedTicks] = useState(0)
   const [gpsRefreshInterval, setGpsRefreshInterval] = useState<GpsRefreshInterval>(getStoredGpsRefreshInterval)
+  const [arrivedAtPickup, setArrivedAtPickup] = useState(false)
 
   // Real-time Event Notifications
   const [notifications, setNotifications] = useState<NotificationItem[]>([
@@ -202,7 +203,48 @@ export default function DriverDashboard() {
       .limit(1)
       .maybeSingle()
 
-    setActiveTrip(tripData)
+    // Fetch emergency request data if patient info is missing from route_data
+    if (tripData && tripData.emergency_id) {
+      const routeData = routeDataFor(tripData)
+      if (!routeData?.patientName) {
+        const { data: emergencyData } = await supabase
+          .from('emergency_requests')
+          .select('patient_name, age, notes, emergency_type')
+          .eq('id', tripData.emergency_id)
+          .maybeSingle()
+        
+        if (emergencyData) {
+          // Update route_data with patient information
+          await supabase
+            .from('ambulance_trips')
+            .update({
+              route_data: {
+                ...(routeData ?? {}),
+                patientName: emergencyData.patient_name,
+                patientNotes: emergencyData.notes,
+                patientAge: emergencyData.age,
+                emergencyType: emergencyData.emergency_type,
+              },
+            })
+            .eq('id', tripData.id)
+          
+          // Reload trip data with updated patient info
+          const { data: updatedTripData } = await supabase
+            .from('ambulance_trips')
+            .select('*')
+            .eq('id', tripData.id)
+            .single()
+          
+          setActiveTrip(updatedTripData)
+        } else {
+          setActiveTrip(tripData)
+        }
+      } else {
+        setActiveTrip(tripData)
+      }
+    } else {
+      setActiveTrip(tripData)
+    }
     
     // Auto-resume simulation only if en route to pickup or hospital
     const rData = routeDataFor(tripData)
@@ -468,7 +510,7 @@ export default function DriverDashboard() {
 
   // GPS Simulation interval
   useEffect(() => {
-    if (!activeTrip || activeTrip.status !== 'in_progress' || !tracking || simulationState.isOffline) return
+    if (!activeTrip || activeTrip.status !== 'in_progress' || !tracking) return
 
     const timer = window.setInterval(async () => {
       const trip = activeTripRef.current
@@ -498,12 +540,25 @@ export default function DriverDashboard() {
             else setLowSpeedTicks(0)
           })
 
+        // Automatic pickup arrival detection
+        const currentLifecycle = normalizeTripWorkflowStatus(routeData?.status || TRIP_WORKFLOW_STATUS.assigned)
+        if (currentLifecycle === TRIP_WORKFLOW_STATUS.goingToPickup) {
+          const arrivalThreshold = 0.05 // 5% of waypoints remaining
+          const isAtPickup = remainingRatio <= arrivalThreshold
+          if (isAtPickup && !arrivedAtPickup) {
+            setArrivedAtPickup(true)
+            pushNotification('Arrived at pickup location. Patient ready for boarding.', 'success')
+          }
+        } else if (currentLifecycle === TRIP_WORKFLOW_STATUS.enRouteHospital) {
+          setArrivedAtPickup(false)
+        }
+
         return nextIndex
       })
     }, 2200)
 
     return () => window.clearInterval(timer)
-  }, [activeTrip, simulationState.isOffline, simulationState.trafficLevel, supabase, tracking])
+  }, [activeTrip, simulationState.isOffline, simulationState.trafficLevel, supabase, tracking, pushNotification])
 
   // Speed screening alert trigger
   useEffect(() => {
@@ -533,17 +588,39 @@ export default function DriverDashboard() {
   const acceptAssignment = async () => {
     if (!activeTrip) return
 
-    await executeTransition(TRIP_WORKFLOW_STATUS.accepted, async () => {
+    await executeTransition(TRIP_WORKFLOW_STATUS.goingToPickup, async () => {
       setLoading(true)
       const routeData = routeDataFor(activeTrip)
+      const startLat = activeTrip.current_lat ?? 12.9352
+      const startLng = activeTrip.current_lng ?? 77.6245
+      const pickupLat = activeTrip.source_lat ?? startLat
+      const pickupLng = activeTrip.source_lng ?? startLng
+
+      const calculatedRoute = await calculateSmartRoute({
+        source: [startLat, startLng],
+        destination: [pickupLat, pickupLng],
+        trafficLevel: simulationState.trafficLevel,
+      })
+
+      const payload = {
+        ...calculatedRoute,
+        phase: 'en_route_to_pickup',
+        status: TRIP_WORKFLOW_STATUS.goingToPickup,
+        priority: routeData?.priority || 'critical',
+        patientName: routeData?.patientName,
+        patientNotes: routeData?.patientNotes,
+        patientAge: routeData?.patientAge,
+        emergencyType: routeData?.emergencyType,
+      }
 
       await supabase
         .from('ambulance_trips')
         .update({
-          route_data: {
-            ...(routeData ?? {}),
-            status: TRIP_WORKFLOW_STATUS.accepted,
-          },
+          status: 'in_progress',
+          route_condition: 'clear',
+          route_data: payload,
+          eta: calculatedRoute.estimatedTime,
+          distance: calculatedRoute.totalDistance,
           updated_at: new Date().toISOString(),
         })
         .eq('id', activeTrip.id)
@@ -555,10 +632,12 @@ export default function DriverDashboard() {
         destination: activeTrip.destination,
         priority: routeData?.priority || 'critical',
         ambulanceId: activeTrip.ambulance_id,
-        eta: activeTrip.eta,
+        eta: calculatedRoute.estimatedTime,
         trip_id: activeTrip.id,
       })
 
+      setRouteIndex(0)
+      setTracking(true)
       await loadData()
     })
   }
@@ -577,104 +656,64 @@ export default function DriverDashboard() {
     })
   }
 
-  const startOutboundJourney = async () => {
-    if (!activeTrip) return
-
-    await executeTransition(TRIP_WORKFLOW_STATUS.goingToPickup, async () => {
-      setLoading(true)
-      const startLat = activeTrip.current_lat ?? 12.9352
-      const startLng = activeTrip.current_lng ?? 77.6245
-      const pickupLat = activeTrip.source_lat ?? startLat
-      const pickupLng = activeTrip.source_lng ?? startLng
-
-      const routeData = await calculateSmartRoute({
-        source: [startLat, startLng],
-        destination: [pickupLat, pickupLng],
-        trafficLevel: simulationState.trafficLevel,
-      })
-
-      const existingRouteData = routeDataFor(activeTrip)
-      const payload = {
-        ...routeData,
-        phase: 'en_route_to_pickup',
-        status: TRIP_WORKFLOW_STATUS.goingToPickup,
-        priority: existingRouteData?.priority || 'critical',
-      }
-
-      await supabase
-        .from('ambulance_trips')
-        .update({
-          status: 'in_progress',
-          route_condition: 'clear',
-          route_data: payload,
-          eta: routeData.estimatedTime,
-          distance: routeData.totalDistance,
-          updated_at: new Date().toISOString(),
-        })
-        .eq('id', activeTrip.id)
-
-      setRouteIndex(0)
-      setTracking(true)
-      await loadData()
-    })
-  }
 
   const pickUpPatient = async () => {
     if (!activeTrip) return
 
-    await executeTransition(TRIP_WORKFLOW_STATUS.patientOnboard, async () => {
-      setLoading(true)
-      const routeData = routeDataFor(activeTrip)
-
-      await supabase
-        .from('ambulance_trips')
-        .update({
-          route_data: {
-            ...(routeData ?? {}),
-            status: TRIP_WORKFLOW_STATUS.patientOnboard,
-          },
-          updated_at: new Date().toISOString(),
-        })
-        .eq('id', activeTrip.id)
-
-      setTracking(false)
-      await loadData()
-    })
-  }
-
-  const startHospitalJourney = async () => {
-    if (!activeTrip) return
-
     await executeTransition(TRIP_WORKFLOW_STATUS.enRouteHospital, async () => {
       setLoading(true)
+      const routeData = routeDataFor(activeTrip)
       const pickupLat = activeTrip.source_lat ?? 12.9352
       const pickupLng = activeTrip.source_lng ?? 77.6245
       const destLat = activeTrip.dest_lat ?? pickupLat
       const destLng = activeTrip.dest_lng ?? pickupLng
 
-      const routeData = await calculateSmartRoute({
+      const calculatedRoute = await calculateSmartRoute({
         source: [pickupLat, pickupLng],
         destination: [destLat, destLng],
         trafficLevel: simulationState.trafficLevel,
       })
 
-      const existingRouteData = routeDataFor(activeTrip)
       const payload = {
-        ...routeData,
+        ...calculatedRoute,
         phase: 'en_route_to_hospital',
         status: TRIP_WORKFLOW_STATUS.enRouteHospital,
-        priority: existingRouteData?.priority || 'critical',
+        priority: routeData?.priority || 'critical',
+        patientName: routeData?.patientName,
+        patientNotes: routeData?.patientNotes,
+        patientAge: routeData?.patientAge,
+        emergencyType: routeData?.emergencyType,
       }
 
       await supabase
         .from('ambulance_trips')
         .update({
           route_data: payload,
-          eta: routeData.estimatedTime,
-          distance: routeData.totalDistance,
+          eta: calculatedRoute.estimatedTime,
+          distance: calculatedRoute.totalDistance,
           updated_at: new Date().toISOString(),
         })
         .eq('id', activeTrip.id)
+
+      // Create automatic Police Alert for hospital route
+      await supabase.from('police_alerts').insert({
+        trip_id: activeTrip.id,
+        alert_type: 'route_assessment',
+        alert_status: 'pending',
+        message: `Ambulance ${activeTrip.ambulance_id} en route to hospital with patient. Route: ${activeTrip.source} → ${activeTrip.destination}. ETA: ${calculatedRoute.estimatedTime} min.`,
+      })
+
+      // Broadcast notification to all dashboards
+      await broadcastTripNotification(supabase, {
+        event_type: 'patient_onboard',
+        driver_id: profile?.id,
+        pickup: activeTrip.source,
+        destination: activeTrip.destination,
+        priority: routeData?.priority || 'critical',
+        ambulanceId: activeTrip.ambulance_id,
+        eta: calculatedRoute.estimatedTime,
+        trip_id: activeTrip.id,
+      })
 
       setRouteIndex(0)
       setTracking(true)
@@ -682,23 +721,195 @@ export default function DriverDashboard() {
     })
   }
 
+
   const completeTrip = async () => {
     if (!activeTrip) return
 
     await executeTransition(TRIP_WORKFLOW_STATUS.completed, async () => {
+      const completionTime = new Date().toISOString()
+      
       await supabase
         .from('ambulance_trips')
-        .update({ status: 'completed', updated_at: new Date().toISOString() })
+        .update({ 
+          status: 'completed', 
+          updated_at: completionTime,
+          route_data: {
+            ...(routeDataFor(activeTrip) ?? {}),
+            completedAt: completionTime,
+          },
+        })
         .eq('id', activeTrip.id)
+
+      // Broadcast notification to all dashboards
+      await broadcastTripNotification(supabase, {
+        event_type: 'trip_completed',
+        driver_id: profile?.id,
+        pickup: activeTrip.source,
+        destination: activeTrip.destination,
+        priority: routeDataFor(activeTrip)?.priority || 'critical',
+        ambulanceId: activeTrip.ambulance_id,
+        trip_id: activeTrip.id,
+      })
 
       setTracking(false)
       await loadData()
     })
   }
 
-  const handleManualReroute = async () => {
-    const reason = activeTrip?.route_condition === 'road_blocked' ? 'road_blocked' : 'heavy_congestion'
-    await rerouteTrip(reason, 'manual')
+  // Simulation control handlers
+  const handleSetRouteClear = async () => {
+    if (!activeTrip) return
+    await updateTripRouteState({
+      route_condition: 'clear',
+      route_data: {
+        ...(routeDataFor(activeTrip) ?? {}),
+        routeState: 'NORMAL',
+        clearanceStatus: 'cleared',
+      },
+    })
+    
+    // Send police alert for route clear
+    await supabase.from('police_alerts').insert({
+      trip_id: activeTrip.id,
+      alert_type: 'route_assessment',
+      alert_status: 'pending',
+      message: `Ambulance ${activeTrip.ambulance_id} route condition: CLEAR. Traffic cleared, proceeding normally.`,
+    })
+    
+    pushNotification('Route condition set to: Clear', 'success')
+  }
+
+  const handleSetRouteBlocked = async () => {
+    if (!activeTrip) return
+    await updateTripRouteState({
+      route_condition: 'road_blocked',
+      route_data: {
+        ...(routeDataFor(activeTrip) ?? {}),
+        routeState: 'ROADBLOCK_DETECTED',
+        clearanceStatus: 'pending',
+      },
+    })
+    
+    // Send police alert for road blocked
+    await supabase.from('police_alerts').insert({
+      trip_id: activeTrip.id,
+      alert_type: 'traffic',
+      alert_status: 'pending',
+      message: `URGENT: Ambulance ${activeTrip.ambulance_id} route BLOCKED. Immediate police intervention required. Location: ${activeTrip.source} → ${activeTrip.destination}.`,
+    })
+    
+    // Broadcast to all dashboards
+    await broadcastTripNotification(supabase, {
+      event_type: 'driver_accepted',
+      driver_id: profile?.id,
+      pickup: activeTrip.source,
+      destination: activeTrip.destination,
+      priority: routeDataFor(activeTrip)?.priority || 'critical',
+      ambulanceId: activeTrip.ambulance_id,
+      eta: activeTrip.eta,
+      trip_id: activeTrip.id,
+    })
+    
+    pushNotification('Route condition set to: Road Blocked', 'warning')
+  }
+
+  const handleSetMediumTraffic = async () => {
+    if (!activeTrip) return
+    await updateTripRouteState({
+      route_condition: 'moderate_traffic',
+      route_data: {
+        ...(routeDataFor(activeTrip) ?? {}),
+        routeState: 'CONGESTION_DETECTED',
+        clearanceStatus: 'pending',
+      },
+    })
+    
+    // Send police alert for moderate traffic
+    await supabase.from('police_alerts').insert({
+      trip_id: activeTrip.id,
+      alert_type: 'traffic',
+      alert_status: 'pending',
+      message: `Ambulance ${activeTrip.ambulance_id} route condition: MODERATE TRAFFIC. Traffic management advised. Route: ${activeTrip.source} → ${activeTrip.destination}.`,
+    })
+    
+    // Broadcast to all dashboards
+    await broadcastTripNotification(supabase, {
+      event_type: 'driver_accepted',
+      driver_id: profile?.id,
+      pickup: activeTrip.source,
+      destination: activeTrip.destination,
+      priority: routeDataFor(activeTrip)?.priority || 'critical',
+      ambulanceId: activeTrip.ambulance_id,
+      eta: activeTrip.eta,
+      trip_id: activeTrip.id,
+    })
+    
+    pushNotification('Route condition set to: Moderate Traffic', 'warning')
+  }
+
+  const handleSetHeavyTraffic = async () => {
+    if (!activeTrip) return
+    await updateTripRouteState({
+      route_condition: 'heavy_congestion',
+      route_data: {
+        ...(routeDataFor(activeTrip) ?? {}),
+        routeState: 'CONGESTION_DETECTED',
+        clearanceStatus: 'pending',
+      },
+    })
+    
+    // Send police alert for heavy congestion
+    await supabase.from('police_alerts').insert({
+      trip_id: activeTrip.id,
+      alert_type: 'traffic',
+      alert_status: 'pending',
+      message: `URGENT: Ambulance ${activeTrip.ambulance_id} route condition: HEAVY CONGESTION. Traffic clearance required. Route: ${activeTrip.source} → ${activeTrip.destination}.`,
+    })
+    
+    // Broadcast to all dashboards
+    await broadcastTripNotification(supabase, {
+      event_type: 'driver_accepted',
+      driver_id: profile?.id,
+      pickup: activeTrip.source,
+      destination: activeTrip.destination,
+      priority: routeDataFor(activeTrip)?.priority || 'critical',
+      ambulanceId: activeTrip.ambulance_id,
+      eta: activeTrip.eta,
+      trip_id: activeTrip.id,
+    })
+    
+    pushNotification('Route condition set to: Heavy Congestion', 'warning')
+  }
+
+  const handleToggleOffline = () => {
+    setSimulationState((prev) => {
+      const newState = !prev.isOffline
+      pushNotification(newState ? 'Offline mode activated' : 'Online mode restored', newState ? 'error' : 'success')
+      return { ...prev, isOffline: newState }
+    })
+  }
+
+  const handleAddAmbulance = () => {
+    if (!activeTrip) return
+    const routeData = routeDataFor(activeTrip)
+    const waypoints = routeData?.waypoints ?? []
+    if (waypoints.length === 0) return
+
+    const randomWaypointIndex = Math.floor(Math.random() * waypoints.length)
+    const [lat, lng] = waypoints[randomWaypointIndex]
+    const newAmbulance = {
+      lat,
+      lng,
+      id: crypto.randomUUID(),
+      ambulanceId: `AMB-${Math.floor(Math.random() * 9000) + 1000}`,
+    }
+
+    setSimulationState((prev) => ({
+      ...prev,
+      spawnedVehicles: [...prev.spawnedVehicles, newAmbulance],
+    }))
+
+    pushNotification(`Added ambulance ${newAmbulance.ambulanceId} to route`, 'info')
   }
 
   const handleRoadblockAdd = async (lat: number, lng: number) => {
@@ -775,7 +986,9 @@ export default function DriverDashboard() {
     
     if (lifecycleStatus === TRIP_WORKFLOW_STATUS.accepted) return 'Assignment accepted. Ready for outbound deployment.'
     if (lifecycleStatus === TRIP_WORKFLOW_STATUS.goingToPickup) {
-      return 'Proceed immediately to pickup location. GPS navigation active.'
+      return arrivedAtPickup 
+        ? 'Arrived at pickup. Patient ready for boarding.'
+        : 'Proceed immediately to pickup location. GPS navigation active.'
     }
     if (lifecycleStatus === TRIP_WORKFLOW_STATUS.patientOnboard) return 'Patient inside responder cabinet. Prepare hospital transit.'
     return 'Patient on board. Navigate to target hospital preemption dock.'
@@ -805,14 +1018,8 @@ export default function DriverDashboard() {
 
   const primaryAction = (() => {
     if (!activeTrip) return null
-    if (trueLifecycle === TRIP_WORKFLOW_STATUS.accepted) {
-      return { label: 'Navigate to Pickup', onClick: startOutboundJourney, icon: Navigation }
-    }
-    if (trueLifecycle === TRIP_WORKFLOW_STATUS.goingToPickup) {
-      return { label: 'Patient Picked Up', onClick: pickUpPatient, icon: Check }
-    }
-    if (trueLifecycle === TRIP_WORKFLOW_STATUS.patientOnboard) {
-      return { label: 'Navigate to Hospital', onClick: startHospitalJourney, icon: Navigation }
+    if (trueLifecycle === TRIP_WORKFLOW_STATUS.goingToPickup && arrivedAtPickup) {
+      return { label: 'Patient Onboard', onClick: pickUpPatient, icon: UserCheck }
     }
     if (trueLifecycle === TRIP_WORKFLOW_STATUS.enRouteHospital) {
       return { label: 'Complete Trip', onClick: completeTrip, icon: Check }
@@ -950,13 +1157,40 @@ export default function DriverDashboard() {
             <div className="grid gap-6 lg:grid-cols-[1.4fr_0.8fr]">
               <Card className="glass-card overflow-hidden border-white/10">
                 <CardHeader className="border-b border-white/10 py-3">
-                  <CardTitle className="flex items-center gap-2 text-base">
-                    <Map className="h-4 w-4 text-primary" />
-                    Navigation Map
-                  </CardTitle>
-                  <CardDescription>
-                    Route · ETA {activeTrip.eta != null ? `${activeTrip.eta} min` : '—'}
-                    {etaDelay > 0 ? ` (+${etaDelay} delay)` : ''}
+                  <div className="flex items-center justify-between">
+                    <CardTitle className="flex items-center gap-2 text-base">
+                      <Map className="h-4 w-4 text-primary" />
+                      Navigation Map
+                    </CardTitle>
+                    {simulationState.isOffline && (
+                      <span className="inline-flex items-center gap-1.5 rounded-lg border border-emergency/30 bg-emergency/10 px-2.5 py-1 text-xs font-semibold text-emergency">
+                        <WifiOff className="h-3 w-3" />
+                        OFFLINE
+                      </span>
+                    )}
+                  </div>
+                  <div className="mt-2 flex items-center gap-2 text-xs">
+                    <span className="font-semibold text-primary">
+                      {trueLifecycle === TRIP_WORKFLOW_STATUS.goingToPickup
+                        ? 'Navigating to Pickup'
+                        : trueLifecycle === TRIP_WORKFLOW_STATUS.enRouteHospital
+                          ? 'Transporting Patient to Hospital'
+                          : 'Standby'}
+                    </span>
+                    <span className="text-muted-foreground">
+                      ·
+                    </span>
+                    <span className="text-muted-foreground">
+                      ETA {activeTrip.eta != null ? `${activeTrip.eta} min` : '—'}
+                      {etaDelay > 0 ? ` (+${etaDelay} delay)` : ''}
+                    </span>
+                  </div>
+                  <CardDescription className="mt-1">
+                    {trueLifecycle === TRIP_WORKFLOW_STATUS.goingToPickup
+                      ? `Route: ${activeTrip.ambulance_id} → ${activeTrip.source}`
+                      : trueLifecycle === TRIP_WORKFLOW_STATUS.enRouteHospital
+                        ? `Route: ${activeTrip.source} → ${activeTrip.destination}`
+                        : 'Awaiting assignment'}
                   </CardDescription>
                 </CardHeader>
                 <CardContent className="p-3">
@@ -969,6 +1203,7 @@ export default function DriverDashboard() {
                     roadblocks={simulationState.roadblocks}
                     spawnedVehicles={simulationState.spawnedVehicles}
                     onRoadblockAdd={handleRoadblockAdd}
+                    showTrafficCircles
                     className="h-[380px] rounded-xl border border-white/10 sm:h-[460px]"
                   />
                 </CardContent>
@@ -1015,11 +1250,6 @@ export default function DriverDashboard() {
                     >
                       {tracking ? 'Pause GPS' : 'Resume GPS'}
                     </Button>
-                    {routeState !== 'NORMAL' && routeState !== 'REROUTING' && (
-                      <Button onClick={handleManualReroute} variant="outline" className="flex-1 border-emergency/30 text-emergency">
-                        Reroute
-                      </Button>
-                    )}
                   </div>
 
                   <div className="rounded-xl border border-white/10 bg-white/[0.03] p-3 text-xs text-muted-foreground">
@@ -1037,6 +1267,73 @@ export default function DriverDashboard() {
                 </CardContent>
               </Card>
             </div>
+
+            <Card className="glass-card border-white/10">
+              <CardHeader className="py-3">
+                <CardTitle className="text-base">Simulation Controls</CardTitle>
+                <CardDescription>Test route conditions and offline mode</CardDescription>
+              </CardHeader>
+              <CardContent className="space-y-4 p-4">
+                <div className="space-y-2">
+                  <p className="text-xs font-semibold text-muted-foreground uppercase tracking-wider">Route Status</p>
+                  <div className="grid grid-cols-2 gap-2">
+                    <Button
+                      size="sm"
+                      variant="outline"
+                      className="border-success/30 text-success hover:bg-success/10"
+                      onClick={handleSetRouteClear}
+                    >
+                      Clear
+                    </Button>
+                    <Button
+                      size="sm"
+                      variant="outline"
+                      className="border-warning/30 text-warning hover:bg-warning/10"
+                      onClick={handleSetMediumTraffic}
+                    >
+                      Medium
+                    </Button>
+                    <Button
+                      size="sm"
+                      variant="outline"
+                      className="border-emergency/30 text-emergency hover:bg-emergency/10"
+                      onClick={handleSetHeavyTraffic}
+                    >
+                      Heavy
+                    </Button>
+                    <Button
+                      size="sm"
+                      variant="outline"
+                      className="border-red-500/30 text-red-400 hover:bg-red-500/10"
+                      onClick={handleSetRouteBlocked}
+                    >
+                      Blocked
+                    </Button>
+                  </div>
+                </div>
+                <div className="space-y-2">
+                  <p className="text-xs font-semibold text-muted-foreground uppercase tracking-wider">System Mode</p>
+                  <div className="grid grid-cols-2 gap-2">
+                    <Button
+                      size="sm"
+                      variant={simulationState.isOffline ? 'default' : 'outline'}
+                      className={simulationState.isOffline ? 'bg-emergency text-white hover:bg-emergency/90' : 'border-white/10'}
+                      onClick={handleToggleOffline}
+                    >
+                      {simulationState.isOffline ? 'Online' : 'Offline'}
+                    </Button>
+                    <Button
+                      size="sm"
+                      variant="outline"
+                      className="border-primary/30 text-primary hover:bg-primary/10"
+                      onClick={handleAddAmbulance}
+                    >
+                      + Ambulance
+                    </Button>
+                  </div>
+                </div>
+              </CardContent>
+            </Card>
 
             <Card className="glass-card border-white/10">
               <CardHeader className="py-3">
@@ -1060,14 +1357,47 @@ export default function DriverDashboard() {
                 <div className="rounded-xl border border-white/10 bg-white/[0.03] p-4">
                   <div className="mb-2 flex items-center gap-2 text-xs text-muted-foreground">
                     <UserCheck className="h-3.5 w-3.5 text-primary" />
-                    Patient Details
+                    Patient Name
                   </div>
                   <p className="text-sm font-medium text-foreground">
                     {patientName ?? 'Not provided'}
                   </p>
-                  {patientNotes && (
-                    <p className="mt-1 text-xs text-muted-foreground">{String(patientNotes)}</p>
-                  )}
+                </div>
+                <div className="rounded-xl border border-white/10 bg-white/[0.03] p-4">
+                  <div className="mb-2 flex items-center gap-2 text-xs text-muted-foreground">
+                    <Shield className="h-3.5 w-3.5 text-warning" />
+                    Priority
+                  </div>
+                  <p className="text-sm font-medium text-foreground capitalize">
+                    {routeData?.priority || 'critical'}
+                  </p>
+                </div>
+                <div className="rounded-xl border border-white/10 bg-white/[0.03] p-4">
+                  <div className="mb-2 flex items-center gap-2 text-xs text-muted-foreground">
+                    <Clock className="h-3.5 w-3.5 text-primary" />
+                    Patient Age
+                  </div>
+                  <p className="text-sm font-medium text-foreground">
+                    {routeData?.patientAge ?? 'Not provided'}
+                  </p>
+                </div>
+                <div className="rounded-xl border border-white/10 bg-white/[0.03] p-4">
+                  <div className="mb-2 flex items-center gap-2 text-xs text-muted-foreground">
+                    <AlertCircle className="h-3.5 w-3.5 text-emergency" />
+                    Emergency Type
+                  </div>
+                  <p className="text-sm font-medium text-foreground">
+                    {routeData?.emergencyType ?? 'Not provided'}
+                  </p>
+                </div>
+                <div className="rounded-xl border border-white/10 bg-white/[0.03] p-4">
+                  <div className="mb-2 flex items-center gap-2 text-xs text-muted-foreground">
+                    <Navigation className="h-3.5 w-3.5 text-primary" />
+                    Incident ID
+                  </div>
+                  <p className="text-sm font-medium text-foreground">
+                    {activeTrip.emergency_id ?? 'Not provided'}
+                  </p>
                 </div>
                 <div className="rounded-xl border border-white/10 bg-white/[0.03] p-4">
                   <div className="mb-2 flex items-center gap-2 text-xs text-muted-foreground">
@@ -1076,6 +1406,15 @@ export default function DriverDashboard() {
                   </div>
                   <p className="text-sm font-medium text-foreground">{currentRoad}</p>
                 </div>
+                {patientNotes && (
+                  <div className="col-span-full rounded-xl border border-white/10 bg-white/[0.03] p-4">
+                    <div className="mb-2 flex items-center gap-2 text-xs text-muted-foreground">
+                      <UserCheck className="h-3.5 w-3.5 text-primary" />
+                      Patient Notes
+                    </div>
+                    <p className="text-sm text-foreground">{String(patientNotes)}</p>
+                  </div>
+                )}
               </CardContent>
             </Card>
           </>

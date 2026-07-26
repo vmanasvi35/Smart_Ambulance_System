@@ -140,18 +140,15 @@ export default function DriversPage() {
         <div className="flex items-center justify-between">
           <div>
             <h1 className="text-xl font-semibold text-foreground">Active Drivers</h1>
-            <p className="text-sm text-muted-foreground">
-              Authenticated Supabase driver accounts only
-            </p>
           </div>
           <div className="flex items-center gap-3">
-            <div className="flex items-center gap-2 rounded-lg bg-emergency/10 px-3 py-1.5 text-emergency">
+            <div className="flex items-center gap-2 rounded-lg bg-blue-500/10 border border-blue-500/25 px-3 py-1.5 text-blue-400">
               <Ambulance className="h-4 w-4" />
               <span className="text-sm font-medium">{onDuty.length} On Duty</span>
             </div>
-            <div className="flex items-center gap-2 rounded-lg bg-success/10 px-3 py-1.5 text-success">
+            <div className="flex items-center gap-2 rounded-lg bg-slate-500/10 border border-white/10 px-3 py-1.5 text-slate-300">
               <User className="h-4 w-4" />
-              <span className="text-sm font-medium">{available.length} Available</span>
+              <span className="text-sm font-medium">{available.length} Standby</span>
             </div>
           </div>
         </div>
@@ -172,73 +169,118 @@ export default function DriversPage() {
             </CardContent>
           </Card>
         ) : (
-          <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-3">
-            {drivers.map((driver) => {
-              const isOnDuty = Boolean(driver.active_trip)
-              return (
-                <Card
-                  key={driver.id}
-                  className={cn(
-                    'glass-card border-white/10',
-                    isOnDuty && 'border-emergency/30',
-                  )}
-                >
-                  <CardHeader className="pb-3">
-                    <div className="flex items-start gap-3">
-                      <div
-                        className={cn(
-                          'flex h-10 w-10 items-center justify-center rounded-full',
-                          isOnDuty
-                            ? 'bg-emergency/15 text-emergency'
-                            : 'bg-success/15 text-success',
-                        )}
-                      >
-                        <User className="h-5 w-5" />
-                      </div>
-                      <div className="min-w-0 flex-1">
-                        <CardTitle className="truncate text-base">{driver.full_name}</CardTitle>
-                        <CardDescription className="mt-1 flex items-center gap-1.5 truncate">
-                          <Mail className="h-3 w-3 shrink-0" />
-                          {driver.email}
-                        </CardDescription>
-                      </div>
-                    </div>
-                  </CardHeader>
-                  <CardContent className="space-y-3 text-sm">
-                    <div className="flex items-center justify-between gap-2">
-                      <span className="text-muted-foreground">Current Status</span>
-                      <span className="font-medium text-foreground">
-                        {isOnDuty
-                          ? driver.active_trip?.status === 'in_progress'
-                            ? 'On active trip'
-                            : 'Assigned'
-                          : 'Standby'}
-                      </span>
-                    </div>
-                    <div className="flex items-center justify-between gap-2">
-                      <span className="text-muted-foreground">Assigned Ambulance</span>
-                      <span className="font-medium text-foreground">
-                        {driver.active_trip?.ambulance_id ?? 'None'}
-                      </span>
-                    </div>
-                    <div className="flex items-center justify-between gap-2 border-t border-white/10 pt-3">
-                      <span className="text-muted-foreground">Availability</span>
-                      <span
-                        className={cn(
-                          'inline-flex items-center gap-1.5 rounded-full border px-2.5 py-0.5 text-xs font-medium',
-                          isOnDuty
-                            ? 'border-emergency/30 bg-emergency/10 text-emergency'
-                            : 'border-success/30 bg-success/10 text-success',
-                        )}
-                      >
-                        <CircleDot className="h-3 w-3" />
-                        {isOnDuty ? 'Unavailable' : 'Available'}
-                      </span>
-                    </div>
-                  </CardContent>
-                </Card>
-              )
-            })}
+          <div className="space-y-8">
+            {/* On Duty Section */}
+            <div>
+              <h2 className="text-sm font-bold uppercase tracking-wider text-blue-400 mb-4 flex items-center gap-2">
+                <span className="h-2 w-2 rounded-full bg-blue-400" />
+                On Duty Drivers ({onDuty.length})
+              </h2>
+              {onDuty.length === 0 ? (
+                <div className="text-xs text-muted-foreground p-4 bg-white/[0.02] border border-white/5 rounded-xl">
+                  No drivers currently on active duty.
+                </div>
+              ) : (
+                <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-3">
+                  {onDuty.map((driver) => (
+                    <Card
+                      key={driver.id}
+                      className="glass-card border-blue-500/15"
+                    >
+                      <CardHeader className="pb-3">
+                        <div className="flex items-start gap-3">
+                          <div className="flex h-10 w-10 items-center justify-center rounded-full bg-blue-500/15 text-blue-400">
+                            <User className="h-5 w-5" />
+                          </div>
+                          <div className="min-w-0 flex-1">
+                            <CardTitle className="truncate text-base">{driver.full_name}</CardTitle>
+                            <CardDescription className="mt-1 flex items-center gap-1.5 truncate">
+                              <Mail className="h-3 w-3 shrink-0" />
+                              {driver.email}
+                            </CardDescription>
+                          </div>
+                        </div>
+                      </CardHeader>
+                      <CardContent className="space-y-3 text-sm">
+                        <div className="flex items-center justify-between gap-2">
+                          <span className="text-muted-foreground">Current Status</span>
+                          <span className="font-medium text-foreground">
+                            {driver.active_trip?.status === 'in_progress' ? 'On active trip' : 'Assigned'}
+                          </span>
+                        </div>
+                        <div className="flex items-center justify-between gap-2">
+                          <span className="text-muted-foreground">Assigned Ambulance</span>
+                          <span className="font-medium text-foreground">
+                            {driver.active_trip?.ambulance_id ?? 'None'}
+                          </span>
+                        </div>
+                        <div className="flex items-center justify-between gap-2 border-t border-white/10 pt-3">
+                          <span className="text-muted-foreground">Availability</span>
+                          <span className="inline-flex items-center gap-1.5 rounded-full border border-blue-500/30 bg-blue-500/10 text-blue-400 px-2.5 py-0.5 text-xs font-medium">
+                            <CircleDot className="h-3 w-3" />
+                            Unavailable
+                          </span>
+                        </div>
+                      </CardContent>
+                    </Card>
+                  ))}
+                </div>
+              )}
+            </div>
+
+            {/* Available Section */}
+            <div>
+              <h2 className="text-sm font-bold uppercase tracking-wider text-slate-300 mb-4 flex items-center gap-2">
+                <span className="h-2 w-2 rounded-full bg-slate-400 animate-pulse" />
+                Available Drivers ({available.length})
+              </h2>
+              {available.length === 0 ? (
+                <div className="text-xs text-muted-foreground p-4 bg-white/[0.02] border border-white/5 rounded-xl">
+                  No available drivers in standby.
+                </div>
+              ) : (
+                <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-3">
+                  {available.map((driver) => (
+                    <Card
+                      key={driver.id}
+                      className="glass-card border-white/5"
+                    >
+                      <CardHeader className="pb-3">
+                        <div className="flex items-start gap-3">
+                          <div className="flex h-10 w-10 items-center justify-center rounded-full bg-slate-500/15 text-slate-300">
+                            <User className="h-5 w-5" />
+                          </div>
+                          <div className="min-w-0 flex-1">
+                            <CardTitle className="truncate text-base">{driver.full_name}</CardTitle>
+                            <CardDescription className="mt-1 flex items-center gap-1.5 truncate">
+                              <Mail className="h-3 w-3 shrink-0" />
+                              {driver.email}
+                            </CardDescription>
+                          </div>
+                        </div>
+                      </CardHeader>
+                      <CardContent className="space-y-3 text-sm">
+                        <div className="flex items-center justify-between gap-2">
+                          <span className="text-muted-foreground">Current Status</span>
+                          <span className="font-medium text-foreground">Standby</span>
+                        </div>
+                        <div className="flex items-center justify-between gap-2">
+                          <span className="text-muted-foreground">Assigned Ambulance</span>
+                          <span className="font-medium text-foreground">None</span>
+                        </div>
+                        <div className="flex items-center justify-between gap-2 border-t border-white/10 pt-3">
+                          <span className="text-muted-foreground">Availability</span>
+                          <span className="inline-flex items-center gap-1.5 rounded-full border border-white/10 bg-slate-500/10 text-slate-300 px-2.5 py-0.5 text-xs font-medium">
+                            <CircleDot className="h-3 w-3" />
+                            Available
+                          </span>
+                        </div>
+                      </CardContent>
+                    </Card>
+                  ))}
+                </div>
+              )}
+            </div>
           </div>
         )}
       </div>
